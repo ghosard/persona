@@ -1,0 +1,9 @@
+{
+  "menu": "Inbox handling…",
+  "title": "Inbox handling",
+  "forward_title": "Forward related messages to their task",
+  "forward_about": "When a new message is linked to a running task, tell that task's owner, the conversation supervising it. It spends that conversation's model turns. Needs the AI twin, which makes the link.",
+  "saved": "Inbox handling saved",
+  "save_failed": "Couldn't save Inbox handling: {error}",
+  "load_failed": "Couldn't read these settings: {error}"
+}

@@ -1,9 +1,8 @@
 // End-to-end check of closeouts, orphaned tasks and their settings (#3612, #3618, #3617; docs/web/web.md "What the session
 // is waiting for"): a stopped agent's page opens with its closeout as a card above the transcript (each claim confirmed,
 // contradicted or not checked), the reply shows without the raw block, list rows end with where it stands on merged and
-// deployed, Settings › Session triage has "Ask for a closeout", Settings › Assistant has the agent follow-up settings
-// (#4293 added "Tell supervisors about new messages"), and an open to-do nobody works on says so on its row
-// and its task card.
+// deployed, Settings › Session triage has "Ask for a closeout", Settings › Assistant has the agent follow-up settings,
+// and an open to-do nobody works on says so on its row and its task card.
 //
 // Needs the web page against the fake hub, and Chrome (or any Chromium through --executable):
 //
@@ -218,15 +217,8 @@ try {
   if ((await hub("/assistant")).agent_tasks !== true) fail("agent_tasks did not save");
   await tasks.click();
   await page.waitForTimeout(400);
-  const signals = page.getByRole("switch", { name: "Tell supervisors about new messages" });
-  if ((await signals.getAttribute("aria-checked")) !== "false" || (await hub("/assistant")).inbox_signals !== false) fail("inbox_signals is not off by default");
-  await signals.click();
-  await page.waitForTimeout(400);
-  const saved = await hub("/assistant");
-  if (saved.inbox_signals !== true || saved.agent_tasks !== false) fail(`inbox_signals did not save alone: ${JSON.stringify(saved)}`);
-  await signals.click();
-  await page.waitForTimeout(400);
-  ok("the days field saves 7, refuses 99999, and the agent tasks and inbox signals switches save");
+  if ((await hub("/assistant")).agent_tasks !== false) fail("agent_tasks did not turn back off");
+  ok("the days field saves 7, refuses 99999, and the agent tasks switch saves");
   await ctx.close();
 
   // Chinese and Japanese: the card's labels fit on a phone

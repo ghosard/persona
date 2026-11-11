@@ -2017,10 +2017,9 @@ SCHEDULE_RAN = []  # what "Run now" started (UI tests read it back at /mock/sche
 ASSISTANT_HUB_NOTES = "代码都在 ~/code 下，平时用 MacBook 开发。\n周报每周五下班前先给我草稿，不要直接发。\n服务器上的 /srv 目录不要动。"
 ASSISTANT_CONFIG = {"machine_id": "server", "launcher": "claude", "timezone": "Asia/Shanghai", "notes": None, "main": ASK1,
                     "main_tasks_quiet": True,  # Notify tasks dispatched from the main chat only in that chat (#1731), on by default
-                    # Every agent Persona starts is a supervised task (#3617), off by default; new Inbox messages on a
-                    # supervised task reach its supervisor (#4293), off by default; closed sessions archive themselves
-                    # after this many idle days (#3618), 0 is never. Left out with MOCK_LEGACY_HUB.
-                    "agent_tasks": False, "inbox_signals": False, "archive_closed_days": 3,
+                    # Every agent Persona starts is a supervised task (#3617), off by default; closed sessions archive
+                    # themselves after this many idle days (#3618), 0 is never. Left out with MOCK_LEGACY_HUB.
+                    "agent_tasks": False, "archive_closed_days": 3,
                     # The role a meeting recording pre-selects (#2981; MOCK_MEETING_ATTENDANCE_DEFAULT=listener starts there)
                     "meeting_attendance_default": os.environ.get("MOCK_MEETING_ATTENDANCE_DEFAULT", "off"),
                     # How long recordings stay (#3235, MOCK_RECORDING_DAYS) and a meeting's minutes after its transcript
@@ -2046,7 +2045,7 @@ def assistant_state(space="", archived=False):
            "conversations": [s for s in ASSISTANT if s["machine_id"] == cfg["machine_id"] and s.get("space", "") == space
                              and (archived or not s.get("archived"))]}
     if not os.environ.get("MOCK_LEGACY_HUB"):
-        out.update(agent_tasks=cfg["agent_tasks"], inbox_signals=cfg["inbox_signals"], archive_closed_days=cfg["archive_closed_days"],
+        out.update(agent_tasks=cfg["agent_tasks"], archive_closed_days=cfg["archive_closed_days"],
                    kb_topics=cfg["kb_topics"])
     if cfg["notes"] is not None:
         out["notes"] = cfg["notes"]
@@ -7577,6 +7576,10 @@ if os.environ.get("MOCK_INBOX_FOLDERS"):
                          ("github:review12", "work/reviews/example-repo", "model"), ("github:ci7", "work/alerts/ci", "model")]:
         for _x in INBOX:
             if _x["id"] == _id: _x["folder"], _x["folder_by"] = _f, _by
+
+# Inbox handling settings (docs/assistant/inbox.md "Inbox handling settings", #4524): GET/PUT /api/v1/inbox/settings, a PUT
+# changes only what it names. Off by default; left out with MOCK_LEGACY_HUB (the route answers 404, as before it).
+INBOX_SETTINGS = {"forward_to_tasks": False}
 
 
 def folder_state(query):
@@ -17761,6 +17764,7 @@ class H(BaseHTTPRequestHandler):
             if other and other[1]: return self.send_json(*other[1])
             return self.send_json({"mutes": OTHER_MUTES.get(other[0], []) if other else MUTES})
         if p == "/api/v1/inbox/folders": return self.send_json(folder_state(q))
+        if p == "/api/v1/inbox/settings" and not os.environ.get("MOCK_LEGACY_HUB"): return self.send_json(INBOX_SETTINGS)
         if p == "/api/v1/inbox/policies":
             other = other_manager(self)
             if other and other[1]: return self.send_json(*other[1])
@@ -19017,6 +19021,13 @@ class H(BaseHTTPRequestHandler):
             if "enabled" in body: FOLDER_CFG["enabled"] = bool(body["enabled"])
             if "rules" in body: FOLDER_CFG["rules"] = str(body["rules"] or "").strip()
             return self.send_json(folder_state({}))
+        if p == "/api/v1/inbox/settings" and self.command == "PUT" and not os.environ.get("MOCK_LEGACY_HUB"):
+            body = json.loads(self.last_body or b"{}")
+            if "forward_to_tasks" in body:
+                if not isinstance(body["forward_to_tasks"], bool):
+                    return self.send_json({"error": "forward_to_tasks must be true or false"}, 400)
+                INBOX_SETTINGS["forward_to_tasks"] = body["forward_to_tasks"]
+            return self.send_json(INBOX_SETTINGS)
         if p.startswith("/api/v1/inbox/") and p.endswith("/folder") and self.command == "PUT":
             iid = unquote(p[len("/api/v1/inbox/"):-len("/folder")])
             inbox_item = next((x for x in INBOX if x["id"] == iid), None)
@@ -19323,8 +19334,6 @@ class H(BaseHTTPRequestHandler):
                 ASSISTANT_CONFIG["archive_closed_days"] = days
             if isinstance(body.get("agent_tasks"), bool):
                 ASSISTANT_CONFIG["agent_tasks"] = body["agent_tasks"]
-            if isinstance(body.get("inbox_signals"), bool):
-                ASSISTANT_CONFIG["inbox_signals"] = body["inbox_signals"]
             if isinstance(body.get("kb_topics"), bool):
                 ASSISTANT_CONFIG["kb_topics"] = body["kb_topics"]
             if body.get("machine_id"):
