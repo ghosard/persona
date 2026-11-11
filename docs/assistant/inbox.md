@@ -354,6 +354,17 @@ Each item can be filed under a **folder path**: a `/`-separated string such as `
 - **Assistant tools** (#3099, `assistant/inbox_folders.go`, descriptions in `prompts/mcp/inbox/`): `inbox_folders` lists the folders in use across every source (path, items, open) and whether automatic filing is on; with `folder` it also lists the items filed there and below, with `unfiled: true` the items in no folder, open first and then newest first, at most 50, each with the id `inbox_move` takes. `inbox_move {items, folder}` makes the same move as `PUT /api/v1/inbox/{id}/folder` (`setInboxFolder`): a path files the items by hand, `""` takes them out of every folder, and the model leaves them alone afterwards. It has no "back to the model" form. Every id is checked first: an unknown id, or a path that normalizes to nothing, moves nothing. A failed write leaves that item as it was and names it in the error.
 - **Not yet**: iOS, Mac and Android browse and move by folder (they ignore the new fields until then), and policies can't target a folder.
 
+## Inbox handling settings (2026-11-11, #4524)
+
+The Inbox's own switches for what it does with an item past triage, one object so the page that gathers the Inbox's handling (#4501) adds its switches here (`assistant/inbox_settings.go`).
+
+- **`forward_to_tasks`** ("Forward related messages to their task"): when the AI twin's judge links new messages from other people to a supervised task, the task's owner (the conversation supervising it) hears of them as the `inbox` signal of its next supervision message ("Task-related items" under "AI twin" below; [unified-entry.md](unified-entry.md), "Supervision (#3124)"). **Off by default**: each one is a turn of that conversation's model.
+- **Data**: `{forward_to_tasks}` under the settings key `inbox_settings`, beside `inbox_policies` and `inbox_folders`.
+- **APIs**: `GET /api/v1/inbox/settings` → `{forward_to_tasks}`. `PUT /api/v1/inbox/settings {forward_to_tasks?}` changes only the fields it names and answers the same; a body that doesn't decode is 400, a failed write 500. Extension scopes follow `/api/v1/inbox/folders`: `inbox.read` reads, `inbox.write` changes. A hub before it answers 404.
+- **Assistant settings tool**: `inbox.forward_to_tasks` (`persona_settings`), approved on the phone with before → after.
+- **Moved from the assistant's settings** (`assistant.inbox_signals`, #4381): while `inbox_settings` was never saved, an "on" kept there is saved here once when the Inbox starts, with a log line naming the new key, so nobody who turned it on finds it off. The old field left `GET/PUT /api/v1/assistant` and the settings tool; the one-time read goes after a release (#2656).
+- **Clients**: **Inbox handling…** in the Inbox ⋯ menu, beside Rules and Folders, opens a dialog (web) or sheet (iOS) with the switch and what it does. The web saves with Save, and a refused save keeps the dialog open with the hub's reason. iOS saves on toggle, goes back and shows the reason when the hub refuses, and leaves the entry out when the hub answers 404. The native Mac app is frozen; Android follows separately.
+
 ## Events and handling chain (phase 1, 2026-11-05)
 
 Requirements are in the team's design description "Inbox evolution, phase 1." Existing items are **events**: arrival, triage, manager handling, result, user confirmation, and execution all happen on one item,
@@ -459,7 +470,7 @@ conversation the item was handed to ("Item actions", Hand to AI), rejecting othe
   nothing changes then. Without `item` the tool works as before. A suggestion from a hand-off records where it came from (`suggestion.conversation`), its chain entry links that
   conversation, and the item's `agent` / `handling` stay as they were (no message card, no old-App draft).
 - **Task-related items**: for linked tasks (2′), prompts include task progress; a reply suggestion inserts a message card into the chat that started the task (`message`, retaining sent state after sending).
-  When the linked task is supervised and the assistant's `inbox_signals` is on (off by default, #4293), each pass that takes new messages from other people into the item also tells the task's supervisor:
+  When the linked task is supervised and the Inbox's `forward_to_tasks` is on (off by default, #4293, "Inbox handling settings" above), each pass that takes new messages from other people into the item also tells the task's supervisor:
   the signal `inbox` in its next supervision message, naming the item (id, title, sender, one line) and how many messages came ([unified-entry.md](unified-entry.md), "Supervision (#3124)").
   Persona's own confirmed reply and bot chats never raise one, and nothing the handling chat does goes into the Inbox.
 
