@@ -39,6 +39,13 @@ own `site/public/style.css`.
   when the file is missing.
 - **Light only.** The previous page also had a dark variant; this one follows the app icon's paper in both schemes.
 
+## Legal pages and support
+
+The privacy and terms pages describe the self-hosted app independently of its distribution channel. Their contact links use
+`/#contact`, the home page's existing product-support footer, which offers email and issue reporting. Keep that anchor stable
+and verify the whole route, not just an HTTP 200 from the legal page. `site/worker.test.mjs` pins both links and their destination.
+The App Store review notes give the Release-compatible offline demo entry and its limits (`release.md`, "External testing").
+
 ## Extensions page
 
 `/extensions/` (`site/public/extensions/index.html`, #4781) lists the extensions of the official market: icon, name,
@@ -54,6 +61,9 @@ keep their colors in both. Add a color as a variable with both values, never as 
   reached the old copy is served (marked `stale`, the page says so) for up to 30 days. With no copy at all it answers
   503 and the page offers a retry and the market on GitHub. The signatures are not checked: the page only displays,
   and a hub checks them before it installs anything.
+- **Only the public market** (#4816): the Worker rejects a catalog whose `generation.repository` is not
+  `nwverse/persona-extensions`, and each extension's source link is its `homepage` only when that points into the
+  repository, otherwise `tree/main/extensions/<id>` there (many manifests declare no homepage).
 - **Optional fields**: `icon_url` (absolute https) and `downloads` (an integer), on an extension or its manifest,
   `category` / `categories`, and `downloads_updated_at` at the top of the payload. Without counts the page hides its
   sort control and lists by name; without an icon it draws the name's first character on a tint; without categories

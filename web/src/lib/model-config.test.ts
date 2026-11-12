@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  agentsOverride, chooseProvider, draftFor, modelConfiguration, modelPatch, modelPurpose, modelSummary, providersFor, runtimeChoices, runtimeFallbackText, saveModelPurpose,
+  agentsOverride, chooseProvider, draftFor, modelConfiguration, modelPatch, modelPurpose, modelSummary, providersFor, runtimeChoices, runtimeFallbackText, saveModelPurpose, withPurposeAfter,
   type ModelProvider, type ModelPurpose,
 } from "./model-config";
-import { executionForm, purposeGroups } from "./model-config-execution";
+import { executionForm, purposeDescription, purposeGroups } from "./model-config-execution";
 
 const purpose: ModelPurpose = {
   id: "lark.agent", name: "飞书 /agent", group: "对话", kind: "launcher", revision: 3,
@@ -91,6 +91,11 @@ describe("执行形态", () => {
       expect(executionForm(direct, [{ id: "direct", name: "Direct", kind: "api", api: protocol }]))
         .toEqual({ label: "直接 API", backend });
     }
+    // A launcher picked for an API purpose runs claude -p, unless it is a managed one speaking Messages (#5823).
+    const kb: ModelPurpose = { ...chat, id: "kb", kind: "api", launch: undefined, effective: { provider: "launcher.x" } };
+    expect(executionForm(kb, [{ id: "launcher.x", name: "Claude Code", kind: "launcher", agent: "claude" }]).backend).toBe("claude -p");
+    expect(executionForm(kb, [{ id: "launcher.x", name: "Gateway", kind: "launcher", has_key: true }]).backend).toBe("Messages");
+    expect(executionForm(kb, [{ id: "launcher.x", name: "Other", kind: "launcher", api: "chat", has_key: true }]).backend).toBe("claude -p");
   });
 });
 
@@ -148,6 +153,32 @@ describe("统一 API 契约", () => {
     await expect(saveModelPurpose(purpose, draft)).rejects.toMatchObject({ status: 409 });
     expect(draft).toEqual({ provider: "strong", model: "main", effort: "high", runtime: "" });
     expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("后台督办的用途 (#5082)", () => {
+  const main: ModelPurpose = { ...purpose, id: "assistant", name: "主对话", launch: "headless" };
+  const agents: ModelPurpose = { ...purpose, id: "agent.new", name: "Agents", launch: "engine" };
+  const supervise: ModelPurpose = { ...purpose, id: "assistant.supervise", name: "后台督办", parent: "assistant", category_id: "assistant", launch: "headless", override: {}, inherited_from: "主对话" };
+
+  it("goes right after Main chat, once, and only when the hub has both", () => {
+    const catalog = { purposes: [main, agents], providers };
+    expect(withPurposeAfter(catalog, supervise, "assistant").purposes.map((p) => p.id)).toEqual(["assistant", "assistant.supervise", "agent.new"]);
+    expect(catalog.purposes).toHaveLength(2); // the hub's answer is left as it was
+    expect(withPurposeAfter(catalog, undefined, "assistant")).toBe(catalog);
+    const listed = { purposes: [main, agents, supervise], providers };
+    expect(withPurposeAfter(listed, supervise, "assistant")).toBe(listed);
+    const noMain = { purposes: [agents], providers };
+    expect(withPurposeAfter(noMain, supervise, "assistant")).toBe(noMain);
+  });
+
+  it("is in Main chat's group and has a sentence saying what it is for; no other purpose has one", () => {
+    const groups = purposeGroups(withPurposeAfter({ purposes: [main, agents], providers }, supervise, "assistant").purposes, "");
+    expect(groups[0][1].map((p) => p.id)).toEqual(["assistant", "assistant.supervise"]);
+    // an older hub's shape (no launch): still with Main chat, by its parent
+    expect(purposeGroups([main, { ...supervise, launch: undefined }, agents], "")[0][1].map((p) => p.id)).toEqual(["assistant", "assistant.supervise"]);
+    expect(purposeDescription(supervise)).toContain("跟进并验收");
+    expect(purposeDescription(main)).toBe("");
   });
 });
 

@@ -3,10 +3,12 @@ package assistant
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/nwverse/persona/server/internal/kb"
@@ -18,8 +20,16 @@ import (
 // each bound to the room's own recording: they take no recording id. The room is listed and may call these only;
 // every other tool call is refused (guestRefuses).
 
-// meetingRoomToolNames are the phase 1 meeting tools.
-func meetingRoomToolNames() []string { return []string{"meeting_lines", "meeting_earlier"} }
+// meetingRoomToolNames are the meeting tools a room starts with: phase 1's, meeting_photo_note (phase 3) and
+// meeting_topics_set (phase 2). A room started before a tool was added keeps the list it started with (the guest
+// book's, the node's allowed tools).
+func meetingRoomToolNames() []string {
+	return []string{"meeting_lines", "meeting_earlier", "meeting_photo_note", toolTopicsSet}
+}
+
+// toolTopicsSet is the room's tool that replaces its meeting's topics (docs/assistant/meeting-minutes.md "Phase 2:
+// live view"); a room's batches show the topics only to a room that has it (roomFeed).
+const toolTopicsSet = "meeting_topics_set"
 
 // meetingRoomTools are a room's tools as its MCP server lists them.
 func meetingRoomTools() []proto.Tool {
@@ -79,6 +89,10 @@ func (s *Service) roomToolCall(ctx context.Context, recording, name string, args
 			return proto.TextResult(err.Error(), true)
 		}
 		return proto.TextResult(string(out), false)
+	case "meeting_photo_note":
+		return photoNoteTool(e, recording, args) // meeting_photos.go
+	case toolTopicsSet:
+		return topicsSetTool(e, recording, args, s.attendNow())
 	}
 	return proto.TextResult("unknown tool "+name, true)
 }
@@ -109,13 +123,14 @@ func meetingLinesText(segs []kb.LiveSegment, from, to *float64) string {
 }
 
 // roomState is what the manager holds in memory for the rooms: the asks waiting for a room to come up (woken when it
-// is ready, unavailable or ended), one ask at a time per room, and the earlier meetings meeting_earlier gave during
-// the ask being answered (its sources).
+// is ready, unavailable or ended), one ask at a time per room (a photo's send takes the slot too), the earlier meetings
+// meeting_earlier gave during the ask being answered (its sources), and the failed sends of photo messages.
 type roomState struct {
-	mu      sync.Mutex
-	waiters map[string][]chan struct{} // by recording: asks waiting for its room
-	turn    map[string]chan struct{}   // by recording: held while an ask runs in its room
-	sources map[string][]kb.AskSource  // by recording: what meeting_earlier gave since the running ask was sent
+	mu         sync.Mutex
+	waiters    map[string][]chan struct{} // by recording: asks waiting for its room
+	turn       map[string]chan struct{}   // by recording: held while an ask runs in its room
+	sources    map[string][]kb.AskSource  // by recording: what meeting_earlier gave since the running ask was sent
+	photoTries map[string]int             // by client_msg_id: failed sends of a photo's message (meeting_photos.go)
 }
 
 // wait is a channel closed when recording's room changes (wake).
@@ -194,4 +209,28 @@ func (r *roomState) takeSources(recording string) []kb.AskSource {
 	}
 	delete(r.sources, recording)
 	return out
+}
+
+// topicsSetTool is the room's meeting_topics_set {topics} for recording, its own meeting: the whole list replaces the
+// topics at now. A list that breaks a limit is refused saying which (kb.CleanTopics), and nothing changes.
+func topicsSetTool(e *kb.Engine, recording string, args json.RawMessage, now time.Time) proto.ToolResult {
+	var a struct {
+		Topics *[]kb.LiveTopic `json:"topics"`
+	}
+	if json.Unmarshal(args, &a) != nil || a.Topics == nil {
+		return proto.TextResult("topics is required, and is the whole list of the meeting's topics: each {title, state, at?, note?}, "+
+			"title and note text, state done, current or open, at a number of seconds from the meeting's start", true)
+	}
+	changed, err := e.TopicsSet(recording, *a.Topics, now)
+	switch {
+	case err == nil && changed:
+		return proto.TextResult("Topics saved.", false)
+	case err == nil:
+		return proto.TextResult("The topics are as they were: nothing changed.", false)
+	case errors.Is(err, kb.ErrBadTopics):
+		return proto.TextResult(err.Error()+". Nothing was saved: send the whole list again within the limits.", true)
+	case errors.Is(err, kb.ErrReadOnly):
+		return proto.TextResult("the meeting's topics can't be changed now", true)
+	}
+	return proto.TextResult("this meeting's topics are not available now", true)
 }

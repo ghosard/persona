@@ -1,4 +1,6 @@
 # Super rules
+0. **Everyone-first product.** Persona is an Agent product for everyone, not a developer-only tool. Assistant must stay approachable for everyday people; Agents is for people who collaborate directly with tools such as Claude Code. Every design identifies its audience, and everyday-facing experiences use plain language with engineering details kept in Agents or advanced settings.
+
 
 These are the highest-priority repository rules. They take precedence over `CLAUDE.md`, `AGENTS.md`, and all other
 repository documentation; when instructions conflict, follow this file.
@@ -61,3 +63,10 @@ Rule 4 defines the audiences of Assistant and Agents and the simplicity required
    understandable; developer terminology, engineering details and accumulating options must not make them harder to use.
    Put specialist workflows in Agents or advanced settings, and disclose details only when needed. For example, asking
    Assistant to organize a trip must not require choosing an Agent runtime or a repository.
+
+5. **Fast, local-first and stateful: never leave the user waiting without feedback.**
+
+   Show local feedback immediately. When the hub receives a message, show Processing without waiting for scheduling,
+   process startup or model output. Keep receipt, delivery and execution distinct; expose waiting and failure, preserve
+   recoverable drafts, and reconcile local state with authoritative outcomes. Make the work itself faster too, and
+   verify feedback latency separately from execution latency.

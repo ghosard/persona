@@ -1,5 +1,6 @@
 // Settings-only presentation stays out of the shared API module and first-screen catalog.
 import { t } from "../i18n";
+import { SUPERVISE_PURPOSE } from "./background-supervisor";
 import { modelSummary, providerAgent, providerName, runtimeLabel, type ModelProvider, type ModelPurpose } from "./model-config";
 import type { Machine } from "./types";
 
@@ -21,6 +22,9 @@ export function executionForm(p: ModelPurpose, providers: ModelProvider[] = [], 
   const agent = providerAgent(provider, p.effective?.provider);
   let backend: string;
   if (p.kind === "plugin") backend = providerName(p.effective?.provider, providers) ?? "";
+  // A launcher picked for an API purpose runs Claude Code once per request on the main chat's computer, unless it is a
+  // managed one with a Messages gateway, called over HTTP (#5823; the hub decides by protocol, a key marks a managed one).
+  else if (p.kind === "api" && provider?.kind === "launcher" && ((provider.api && provider.api !== "messages") || !provider.has_key)) backend = "claude -p";
   else if (p.kind === "api") backend = { messages: "Messages", responses: "Responses", chat: "Chat" }[provider?.api || "messages"];
   else if (launch === "headless") {
     backend = agent === "codex" ? "codex app-server"
@@ -31,6 +35,12 @@ export function executionForm(p: ModelPurpose, providers: ModelProvider[] = [], 
     backend = `${machine ? machine.engine_default || machine.engine || "herdr" : t("lib-agent-groups.by_machine")} · ${agent}`;
   }
   return { label: executionLabel(launch || p.kind), backend };
+}
+
+/** What a purpose is for, in a sentence under its row; only the ones this page has words for (the background
+ *  supervisor's, #5082). */
+export function purposeDescription(p: Pick<ModelPurpose, "id">): string {
+  return p.id === SUPERVISE_PURPOSE ? t("settings-modelconfiguration.supervise_description") : "";
 }
 
 export function purposeGroups(purposes: ModelPurpose[], query: string, providers: ModelProvider[] = []): [string, ModelPurpose[]][] {

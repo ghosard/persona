@@ -255,8 +255,7 @@ struct RootView: View {
         #if DEBUG || PERF_SIGNPOST
         let _ = PerfTrace.body("RootTabs")
         #endif
-        @Bindable var model = model
-        TabView(selection: $model.selectedTab) {
+        TabView(selection: Binding(get: { model.selectedTab }, set: { model.selectHomeTab($0) })) {
             AssistantRootTab()
             AgentsRootTab()
             #if os(iOS) || os(visionOS)
@@ -537,7 +536,7 @@ private struct TabPage<Page: View>: View, Equatable {
     private var badge: Text? {
         if model.isDemo { return Text("Demo") }
         let total = ExtensionSlots.shared.total
-        if total.count > 0 { return Text(total.count > 99 ? "99+" : "\(total.count)") }
+        if let text = CountBadge.text(total.count) { return Text(text) }
         return total.dot ? Text("•") : nil
     }
 }
