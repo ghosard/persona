@@ -17,7 +17,7 @@ vi.mock("./store", () => {
 });
 vi.mock("./router", () => ({ navigate: vi.fn() }));
 
-import { acceptOutgoing, arrived, forgetOutgoing, askPersona, discardOutbox, inSendOrder, keepFailed, keepOutgoing, noteSent, noteWritten, outboxMessage, placeFailed, queueToSession, resetOutboxClaimsForTests, resetRestoredForTests, restoreOutbox, retryOutbox, sendToSession, settle, settleOutbox, SENT_GRACE_MS, type OutboxEntry } from "./outbox";
+import { acceptOutgoing, arrived, forgetOutgoing, askPersona, discardOutbox, inSendOrder, keepFailed, keepOutgoing, noteSent, noteWritten, outboxMessage, placeFailed, queueToSession, resetOutboxClaimsForTests, resetRestoredForTests, restoreOutbox, retryOutbox, retryOutboxEntry, sendToSession, settle, settleOutbox, SENT_GRACE_MS, type OutboxEntry } from "./outbox";
 import { messageFeedback, resetMessageFeedback } from "./message-send";
 import type { ChatLine } from "./turns";
 import { ApiError } from "./api";
@@ -167,6 +167,23 @@ describe("sending from another page", () => {
     const id = outbox()["m/s"][0].id;
     await retryOutbox("m", "s", id);
     expect(JSON.parse(fetcher.mock.calls[1][1].body).client_msg_id).not.toBe(id);
+  });
+
+  it("a retried send that was in doubt is not taken for sent by the first try's copy", () => {
+    // The first try ended in doubt and the owner sent it again before its copy showed. That copy, written before the
+    // retry, is not the new message's: only one written after the retry is (within the 5 s the clocks are allowed).
+    let resolve!: (v: unknown) => void;
+    vi.stubGlobal("fetch", vi.fn().mockReturnValueOnce(new Promise((r) => (resolve = r))));
+    keepFailed("m", "s", { id: "a8", text: "再发一次", images: [], at: Date.now() - 100_000 }, new ApiError(502, "x", { delivered: "unknown" }));
+    const { id } = retryOutboxEntry("m", "s", "a8");
+    try {
+      settleOutbox("m", "s", [{ id: "line-1", text: "再发一次", images: [], ts: new Date(Date.now() - 99_000).toISOString() }]);
+      expect(outbox()["m/s"]).toMatchObject([{ id, state: "sending" }]);
+      settleOutbox("m", "s", [{ id: "line-2", text: "再发一次", images: [], ts: new Date(Date.now() + 1_000).toISOString() }]);
+      expect(outbox()["m/s"]).toBeUndefined();
+    } finally {
+      resolve(response({ ok: true })); // the retry's send ends either way, so the conversation's queue is free for the next case
+    }
   });
 
   it("notes a prompt that started a conversation as sent", () => {

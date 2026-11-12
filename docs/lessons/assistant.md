@@ -413,5 +413,6 @@ covers a line that lands late and a node restarted in between; and the send push
 owner's own message everywhere (its source label, task briefs, user-input counts, extensions). The web had the same
 blind spot for the owner's own sends: a send answered 502 `delivered: "unknown"` stayed a failed bubble unless the hub
 tied a transcript line to its id, so the owner sent it again; a send in doubt now also settles by its words written
-after it (`inDoubt` in `web/src/lib/outbox.ts`), also when the copy arrived before the answer did (ChatView settles at
-once). A refusal never settles by words.
+after it (`inDoubt` in `web/src/lib/outbox.ts`; `isEcho` in `web/src/lib/echo.ts` allows 5 s for the clocks, not
+`CLOCK_SLACK_MS`); one whose copy arrived before the answer did was already settled while it went (`flight.echoed()`
+in ChatView). A refusal never settles by words.

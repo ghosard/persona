@@ -68,13 +68,8 @@ export function outboxMessage(e: OutboxEntry): UserMessage {
 
 type Described = Pick<OutboxEntry, "text" | "images" | "at"> & Partial<Pick<OutboxEntry, "id" | "wordsOnly">>;
 
-/** How much earlier than its send a copy of a send in doubt may say it was written (the computer's clock against this
- *  page's): far less than CLOCK_SLACK_MS, since only its words find it. */
-const IN_DOUBT_SLACK_MS = 5_000;
-
-const seenAs = (e: Described & Partial<Pick<OutboxEntry, "inDoubt" | "state">>): Sent => ({
-  id: e.wordsOnly ? undefined : e.id, text: parseUserText(e.text).text, images: e.images, at: e.at,
-  notBefore: e.inDoubt && e.state === "failed" ? e.at - IN_DOUBT_SLACK_MS : undefined,
+const seenAs = (e: Described & Partial<Pick<OutboxEntry, "inDoubt">>): Sent => ({
+  id: e.wordsOnly ? undefined : e.id, text: parseUserText(e.text).text, images: e.images, at: e.at, inDoubt: e.inDoubt,
 });
 
 /** The transcript has this message: one of its latest user messages, or an item the hub tied to it, is its copy (lib/echo.ts). */
@@ -193,9 +188,10 @@ export function settleOutbox(mid: string, sid: string, users: Seen[]) {
 /** A failed entry's fields for the error its send ended with. */
 function failedWith(err: unknown): Pick<OutboxEntry, "state" | "error" | "clearable" | "newId" | "inDoubt"> {
   return {
+    // the hub stopped waiting (delivered "unknown"): it may have gone in, and its copy in the transcript settles it (settle)
+    inDoubt: err instanceof ApiError && err.body.delivered === "unknown",
     state: "failed",
     error: failureText(err),
-    inDoubt: err instanceof ApiError && err.body.delivered === "unknown",
     clearable: err instanceof ApiError && err.code === "input_draft" && typeof err.body.clearable === "string" ? err.body.clearable : undefined,
     // the hub answered: it keeps that answer for this id, so a retry is another operation; a gap it never
     // answered is retried with the same id (the hub does it at most once)
@@ -381,8 +377,9 @@ export function retryOutboxEntry(mid: string, sid: string, id: string, clearDraf
   const key = outboxKey(mid, sid);
   const e = list(key).find((x) => x.id === id);
   if (!e || e.state !== "failed") return { id, sent: Promise.resolve(false) };
-  // the hub said it may have gone in: the user looked and wants it sent again, as a new message
-  const next: OutboxEntry = { ...e, id: e.newId ? uuid() : e.id, newId: false, inDoubt: undefined, state: "sending", error: undefined, acceptedAt: undefined, at: Date.now() };
+  // the hub said it may have gone in: the user looked and wants it sent again, as a new message. One that was in doubt
+  // stays so: its copy is written after this, and the first try's, landing late, must not stand in for it (lib/echo.ts isEcho)
+  const next: OutboxEntry = { ...e, id: e.newId ? uuid() : e.id, newId: false, state: "sending", error: undefined, acceptedAt: undefined, at: Date.now() };
   const flight = beginMessageSend(mid, sid, next.id, next.text);
   noteWritten(next.id, next.at);
   write(key, list(key).map((x) => (x.id === id ? next : x)));
