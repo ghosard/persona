@@ -130,10 +130,13 @@ type superviseBook struct {
 	asks    map[string]string            // todo → what its agent last asked (InteractionRaised)
 	last    time.Time                    // when the last supervision message went out
 	queued  map[string][]superviseSignal // conversation → the signals of the message still waiting in its queue
-	timer   *time.Timer
-	timerAt time.Time
-	hold    map[string]time.Time // conversation → when a supervision message went in: its turn's finish is not pushed
-	visible map[string]bool      // an explicit user action makes the current triage turn visible
+	// legacyBackground: conversation + "\x00" + todo → an old notice reached this background conversation, so it may
+	// finish that task. Memory only on purpose: after a restart an unknown queued notice moves to main.
+	legacyBackground map[string]bool
+	timer            *time.Timer
+	timerAt          time.Time
+	hold             map[string]time.Time // conversation → when a supervision message went in: its turn's finish is not pushed
+	visible          map[string]bool      // an explicit user action makes the current triage turn visible
 	// failSeen: tasks whose failed start a supervision message carried, when, and for which conversation
 	// (start_remedy.go remedyTurnEnded)
 	failSeen map[string]failSeen
@@ -145,6 +148,7 @@ func (b *superviseBook) init() {
 	if b.pending == nil {
 		b.pending, b.sent, b.asks, b.hold = map[string]superviseSignal{}, map[string]string{}, map[string]string{}, map[string]time.Time{}
 		b.visible = map[string]bool{}
+		b.legacyBackground = map[string]bool{}
 	}
 	if b.failSeen == nil {
 		b.failSeen = map[string]failSeen{}
@@ -201,6 +205,11 @@ func digestWait(now, last time.Time, pending []superviseSignal, p superviseTimin
 // signal records g for the supervisor, unless the same stretch of state was told already, and sees that the message
 // goes out when it is due.
 func (s *Service) signal(g superviseSignal) {
+	if g.Todo != "" {
+		if t, ok := s.todoNow(g.Todo); ok && s.reporterStopped(context.Background(), t.Origin) {
+			return // /stop silences the reporting task's notices on every route until the user speaks again (#3308)
+		}
+	}
 	if g.level() == supervisionInfo {
 		return // Progress is already recorded on the task card; it never wakes the assistant.
 	}

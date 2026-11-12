@@ -182,15 +182,18 @@ func (s *Service) deliverDigest(ctx context.Context, here Settings, to string, l
 		b.mu.Unlock()
 		return false
 	}
+	background := to != here.Main && to == here.BackgroundSupervisor // old work only; also scopes its closeout grant
 	accepted := false
 	defer func() {
 		if !accepted {
 			rollback()
 			return
 		}
+		if background {
+			s.rememberLegacyBackground(to, kept)
+		}
 		s.parkedDueTold(ctx, kept) // told for good: not again after a restart (parked.go)
 	}()
-	background := to != here.Main && to == here.BackgroundSupervisor // the leader's message, told that the tasks are not its own (supervise_background.go)
 	leader := background || to != here.Main && s.isLeader(ctx, to)
 	render := func(list []prompts.SuperviseEntry) string {
 		return prompts.RenderSupervise(prompts.Supervise{Entries: sortEntries(list), Leader: leader, Background: background, Side: to != here.Main && !leader, Escalated: escalatedIn(list),
@@ -218,6 +221,8 @@ func (s *Service) deliverDigest(ctx context.Context, here Settings, to string, l
 			}
 		}
 		msg.Text, msg.Urgent = render(allEntries), anyDecision(all)
+		signals := slices.Clone(all)
+		msg.Signals = &signals
 		if s.replaceQueuedSupervise(to, msg) {
 			accepted = true
 			b.mu.Lock()
@@ -282,6 +287,8 @@ func (b *superviseBook) setQueuedLocked(to string, list []superviseSignal) {
 // out), and the digest is tried again in the urgent gap, or later when the gap after prev has not passed yet.
 func (s *Service) queueDigest(to string, msg relayMsg, kept []superviseSignal, at, prev time.Time) bool {
 	b := &s.supervise
+	signals := slices.Clone(kept)
+	msg.Signals = &signals
 	if s.queueRelay(to, msg) > 0 {
 		b.mu.Lock()
 		b.setQueuedLocked(to, kept)

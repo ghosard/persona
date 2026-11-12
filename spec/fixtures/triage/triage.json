@@ -428,7 +428,7 @@
     },
     {
       "name": "closed_recently",
-      "description": "关掉 24 小时内：「刚做完」。",
+      "description": "关掉以后立即是「已完成」，不是「已交付·待看」（#5732）。",
       "source": [
         "docs/assistant/todo-status-sop.md \"Decision table\"",
         "web/src/lib/todo-triage.ts triage"
@@ -483,10 +483,10 @@
         }
       },
       "expected": {
-        "section": "just_done",
+        "section": "done",
         "rule": "closed"
       },
-      "from_test": "web/src/lib/todo-triage.test.ts > a closed to-do is Just finished for a day, then Done"
+      "from_test": "web/src/lib/todo-triage.test.ts > a closed to-do is Done immediately, however recent"
     },
     {
       "name": "closed_long_ago",
@@ -548,11 +548,11 @@
         "section": "done",
         "rule": "closed"
       },
-      "from_test": "web/src/lib/todo-triage.test.ts > a closed to-do is Just finished for a day, then Done"
+      "from_test": "web/src/lib/todo-triage.test.ts > a closed to-do is Done immediately, however recent"
     },
     {
       "name": "accepted_reopened",
-      "description": "验收后被 hub 重开（又派了活）：仍是已验收、刚做完。",
+      "description": "验收后被 hub 重开（又派了活）：仍是已验收、已完成，不是待验收。",
       "source": [
         "docs/assistant/todo-status-sop.md \"Decision table\"",
         "web/src/lib/todo-triage.ts triage"
@@ -657,10 +657,10 @@
         }
       },
       "expected": {
-        "section": "just_done",
+        "section": "done",
         "rule": "accepted"
       },
-      "from_test": "web/src/lib/todo-triage.test.ts > an accepted task reopened by more work is finished, not Follow up"
+      "from_test": "web/src/lib/todo-triage.test.ts > an accepted task reopened by more work is Done, not awaiting review"
     },
     {
       "name": "accepted_running_again",
@@ -775,7 +775,7 @@
     },
     {
       "name": "deployed",
-      "description": "交付已上线：刚做完。",
+      "description": "交付已上线但未验收：始终待看，不进入完成或搁置。",
       "source": [
         "docs/assistant/todo-status-sop.md \"Decision table\"",
         "web/src/lib/todo-triage.ts triage"
@@ -823,21 +823,21 @@
           "id": "t",
           "title": "t",
           "created_at": "2026-10-29T00:00:00.000Z",
-          "updated_at": "2026-11-10T11:00:00.000Z",
+          "updated_at": "2026-10-29T00:00:00.000Z",
           "done_at": null,
           "agents": [],
           "origin": "conv",
           "delivery": {
             "state": "live",
-            "at": "2026-11-10T10:00:00.000Z"
+            "at": "2026-10-29T00:00:00.000Z"
           }
         }
       },
       "expected": {
         "section": "just_done",
-        "rule": "deployed"
+        "rule": "finished_unseen"
       },
-      "from_test": "web/src/lib/todo-triage.test.ts > a deployed delivery is finished"
+      "from_test": "web/src/lib/todo-triage.test.ts > a live delivery stays awaiting review until accepted"
     },
     {
       "name": "finished_unseen",
@@ -1542,7 +1542,7 @@
       },
       "expected": {
         "section": "just_done",
-        "rule": "deployed"
+        "rule": "finished_unseen"
       },
       "from_test": "web/src/lib/todo-triage.test.ts > a PR the stage says is merged is not PR to merge, whatever the delivery (#3205)"
     },
@@ -2464,6 +2464,53 @@
         "rule": "rest"
       },
       "derived": true
+    },
+    {
+      "name": "cancelled_precedes_agent_and_closed_states",
+      "description": "取消独立显示，先于 Agent 等待和普通完成状态；旧 supervision 形式同样识别。",
+      "source": [
+        "docs/assistant/todo-status-sop.md \"Decision table\"",
+        "web/src/lib/todo-triage.ts triage"
+      ],
+      "input": {
+        "now": "2026-11-10T12:00:00Z",
+        "sessions": [
+          {
+            "machine_id": "m",
+            "session_id": "ask",
+            "state": "needs_you",
+            "status": "idle",
+            "updated_at": "2026-11-10T11:00:00.000Z"
+          }
+        ],
+        "todo": {
+          "id": "t",
+          "title": "Cancelled work",
+          "created_at": "2026-10-29T00:00:00.000Z",
+          "updated_at": "2026-11-10T11:00:00.000Z",
+          "done_at": "2026-11-10T10:00:00.000Z",
+          "done_by": "review",
+          "cancelled_at": "2026-11-10T10:00:00.000Z",
+          "cancelled_reason": "No longer needed",
+          "agents": [
+            {
+              "machine_id": "m",
+              "session_id": "ask",
+              "linked_at": "2026-11-02T04:00:00.000Z"
+            }
+          ],
+          "origin": "conv",
+          "supervision": {
+            "supervisor": "main",
+            "state": "cancelled",
+            "reviews": []
+          }
+        }
+      },
+      "expected": {
+        "section": "cancelled",
+        "rule": "cancelled"
+      }
     }
   ]
 }

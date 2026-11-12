@@ -40,5 +40,7 @@
   "dispatch_notes": "由 {from_machine} 上的 {from} 派出（dispatch_start）：{machine} · {cwd}",
   "adopt_failed": "收编没成功：{reason}",
   "interrupt_summary": "停下 {agent} · {machine}",
-  "start_remedy_notice": "没开起来：「{title}」。{reason}"
+  "start_remedy_notice": "没开起来：「{title}」。{reason}",
+  "task_needs_user_title": "「{name}」等你处理",
+  "task_needs_user_title_health": "有任务等你处理"
 }

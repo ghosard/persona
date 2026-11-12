@@ -194,6 +194,9 @@ type relayMsg struct {
 	Text      string    `json:"text"`
 	Hop       int       `json:"hop"`
 	At        time.Time `json:"at"`
+	// Signals is the structured content of a queued supervision message. It lets /stop remove one task and regather
+	// the others even after a restart lost supervise.queued; older messages without it use their embedded task ids.
+	Signals *[]superviseSignal `json:"signals,omitempty"`
 	// State is a task notice's state (quiet.go: done | needs | interrupted | failed); "" for other relays.
 	State string `json:"state,omitempty"`
 	// Urgent: a supervision message with a signal that waits on a decision (relay_presence.go). A version that does

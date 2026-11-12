@@ -309,9 +309,9 @@ func taskHealth(t Todo, agents []proto.Session, now time.Time) (string, int) {
 	}
 	switch v.state(t) {
 	case reviewNeedsUser:
-		return "等你决定", 0
+		return "等你处理", 0
 	case reviewPending:
-		return "待验收", 1
+		return "已交付·待看", 1
 	case reviewAccepted:
 		return "已验收", 8
 	case reviewCancelled:

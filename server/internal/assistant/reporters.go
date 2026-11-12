@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -182,6 +183,9 @@ func (s *Service) stopReporting(ctx context.Context, sid, by string) (stopResult
 		res.Conversation = true
 	}
 	tasks := s.todosOf(ctx, sid)
+	if n := s.dropSupervisionFor(tasks); n > 0 {
+		s.publish(ctx)
+	}
 	sort.Slice(tasks, func(i, j int) bool { return tasks[i].CreatedAt.Before(tasks[j].CreatedAt) })
 	for _, t := range tasks {
 		if t.DoneAt != nil {
@@ -210,9 +214,158 @@ func (s *Service) stopReporting(ctx context.Context, sid, by string) (stopResult
 	return res, nil
 }
 
+// dropSupervisionFor removes gathered and queued supervision of tasks whose reporting conversation was stopped.
+// Other tasks in a mixed queued digest are gathered again, so silencing one reporter cannot drop their notices (#5732).
+// The persisted relay queue is inspected too: supervise.queued is memory only and does not survive a restart.
+func (s *Service) dropSupervisionFor(tasks []Todo) int {
+	ids := map[string]bool{}
+	for _, t := range tasks {
+		ids[t.ID] = true
+	}
+	if len(ids) == 0 {
+		return 0
+	}
+	known := s.todosOf(context.Background(), "*")
+	b := &s.supervise
+	dropped := 0
+	b.mu.Lock()
+	b.init()
+	for key, g := range b.pending {
+		if ids[g.Todo] {
+			delete(b.pending, key)
+			dropped++
+		}
+	}
+	for to, queue := range b.queued {
+		kept := make([]superviseSignal, 0, len(queue))
+		for _, g := range queue {
+			if ids[g.Todo] {
+				dropped++
+				continue
+			}
+			kept = append(kept, g)
+		}
+		if len(kept) == len(queue) {
+			continue
+		}
+		b.setQueuedLocked(to, nil)
+		for _, g := range kept {
+			b.pending[g.id()] = g
+		}
+	}
+	b.mu.Unlock()
+
+	// Every persisted queue, not just those still indexed in memory. A pre-restart message has no structured signals;
+	// its embedded todo ids are the compatible fallback.
+	conversations := map[string]bool{}
+	r := &s.relays
+	r.mu.Lock()
+	if s.relayLocked(context.Background()) {
+		for to := range r.st.Queue {
+			conversations[to] = true
+		}
+	}
+	r.mu.Unlock()
+	for to := range conversations {
+		dropped += s.dropQueuedSupervisionTasks(to, ids, known)
+	}
+	b.mu.Lock()
+	if len(b.pending) > 0 {
+		s.scheduleDigestLocked(time.Now())
+	}
+	b.mu.Unlock()
+	return dropped
+}
+
+// dropQueuedSupervisionTasks removes only the stopped tasks' supervise messages from one persisted queue. Structured
+// signals preserve the exact rest of a mixed digest. For an older message, other todo ids found in its text are turned
+// into fresh unjudged signals rather than silently losing their notification.
+func (s *Service) dropQueuedSupervisionTasks(conversation string, ids map[string]bool, known []Todo) int {
+	r := &s.relays
+	r.mu.Lock()
+	if !s.relayLocked(context.Background()) {
+		r.mu.Unlock()
+		return 0
+	}
+	q := r.st.Queue[conversation]
+	kept := make([]relayMsg, 0, len(q))
+	var regather []superviseSignal
+	for i, m := range q {
+		if m.Tool != superviseTool || i == 0 && r.draining[conversation] {
+			kept = append(kept, m)
+			continue
+		}
+		target := false
+		var remaining []superviseSignal
+		if m.Signals != nil && len(*m.Signals) > 0 {
+			for _, g := range *m.Signals {
+				if ids[g.Todo] {
+					target = true
+				} else {
+					remaining = append(remaining, g)
+				}
+			}
+		} else {
+			for id := range ids {
+				target = target || strings.Contains(m.Text, id)
+			}
+			if target {
+				at := m.At
+				if at.IsZero() {
+					at = time.Now().UTC()
+				}
+				for _, other := range known {
+					if other.ID == "" || ids[other.ID] || !strings.Contains(m.Text, other.ID) {
+						continue
+					}
+					remaining = append(remaining, superviseSignal{Todo: other.ID, Kind: sigUnjudged,
+						Key: "pre-restart-" + at.UTC().Format(time.RFC3339Nano), At: at, Detail: "重启前排队的督办"})
+				}
+			}
+		}
+		if !target {
+			kept = append(kept, m)
+			continue
+		}
+		regather = append(regather, remaining...)
+	}
+	n := len(q) - len(kept)
+	if n == 0 {
+		r.mu.Unlock()
+		return 0
+	}
+	if len(kept) == 0 {
+		delete(r.st.Queue, conversation)
+	} else {
+		r.st.Queue[conversation] = kept
+	}
+	s.saveRelayLocked()
+	r.mu.Unlock()
+
+	b := &s.supervise
+	b.mu.Lock()
+	b.init()
+	for _, g := range regather {
+		if _, newer := b.pending[g.id()]; !newer {
+			b.pending[g.id()] = g
+		}
+	}
+	b.mu.Unlock()
+	return n
+}
+
 // dropQueuedNotices takes the task notices waiting for conversation to off its queue (one going in right now stays)
 // and says how many went.
 func (s *Service) dropQueuedNotices(conversation string) int {
+	return s.dropQueuedTool(conversation, noticeTool)
+}
+
+func (s *Service) dropQueuedSupervision(conversation string) int {
+	return s.dropQueuedTool(conversation, superviseTool)
+}
+
+// dropQueuedTool takes queued messages of one tool off conversation's relay queue (one going in right now stays).
+func (s *Service) dropQueuedTool(conversation, tool string) int {
 	b := &s.relays
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -222,7 +375,7 @@ func (s *Service) dropQueuedNotices(conversation string) int {
 	q := b.st.Queue[conversation]
 	kept := make([]relayMsg, 0, len(q))
 	for i, m := range q {
-		if m.Tool != noticeTool || i == 0 && b.draining[conversation] {
+		if m.Tool != tool || i == 0 && b.draining[conversation] {
 			kept = append(kept, m)
 		}
 	}

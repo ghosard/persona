@@ -3,6 +3,7 @@ package assistant
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -27,7 +28,63 @@ func stopOnOwner(t *testing.T, s *Service, f *fakeHub, todoID string) {
 	waitFor(t, "the owner wait on the ledger", func() bool { return todoNow(s, todoID).Supervision.Waits != nil })
 }
 
-// The way #1277 saw it fail: a task whose work stopped on a decision only the owner can make (two drafts for them to
+// A needs_user judgment is itself the visible waiting state, not only a note for a later supervisor round. The push
+// carries the reason and task link, and judging the same stretch again does not push it twice (#5732).
+func TestNeedsUserJudgmentWaitsAndPushesOnce(t *testing.T) {
+	s, f := newQuietService(t)
+	withWebBot(f, testWeb)
+	f.known["side1"] = true
+	if _, err := s.toolTaskPlan(context.Background(), "side1", planArgs(true)); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the side task's agent", func() bool { return len(onlyTodo(s).Agents) == 1 })
+	todo := onlyTodo(s)
+	if todo.Quiet || todo.Supervision == nil || todo.Supervision.Supervisor != "conv1" {
+		t.Fatalf("side task = %+v", todo)
+	}
+	f.judge = `{"verdict":"needs_user","reason":"需要你本人操作"}`
+	agentTurn(s, f, proto.StatusWorking, "", 0)
+	agentTurn(s, f, proto.StatusDone, "Spec 已完成，下一步由你发起实现。", 0)
+	waitFor(t, "the visible owner wait", func() bool {
+		return todoNow(s, todo.ID).Supervision.State == reviewNeedsUser
+	})
+	cur := todoNow(s, todo.ID)
+	if cur.DoneAt != nil || cur.Supervision.Waits == nil {
+		t.Fatalf("waiting task = %+v", cur)
+	}
+	waitFor(t, "the needs-user push", func() bool { return len(f.pushed()) == 1 })
+	pushes := f.pushed()
+	if len(pushes) != 1 || pushes[0].Kind != NotifyPush || pushes[0].SessionID != "conv1" ||
+		!strings.Contains(pushes[0].Body, "需要你本人操作") || !strings.Contains(pushes[0].Body, testWeb+"/todos?id="+todo.ID) {
+		t.Fatalf("needs-user pushes = %+v", pushes)
+	}
+	s.superviseJudged(context.Background(), cur, cur.Supervision.Waits.Work, taskDoneCheck{Verdict: verdictNeedsUser, Reason: "需要你本人操作"}, nil)
+	if got := len(f.pushed()); got != 1 {
+		t.Fatalf("same wait pushed %d times", got)
+	}
+}
+
+// The explicit owner-action safety net still becomes the visible wait and one push when the model itself failed.
+func TestOwnerWaitSurvivesJudgeFailure(t *testing.T) {
+	s, f := newQuietService(t)
+	f.known["side1"] = true
+	if _, err := s.toolTaskPlan(context.Background(), "side1", planArgs(true)); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the side task's agent", func() bool { return len(onlyTodo(s).Agents) == 1 })
+	todo := onlyTodo(s)
+	work := time.Now().UTC()
+	s.applyTaskDone(context.Background(), todo, work, true,
+		taskDoneCheck{Verdict: verdictNeedsUser, Reason: "Should I proceed with the implementation?"}, errors.New("model unavailable"))
+	waitFor(t, "the visible wait despite the judge failure", func() bool {
+		return todoNow(s, todo.ID).Supervision.State == reviewNeedsUser
+	})
+	if cur := todoNow(s, todo.ID); cur.DoneAt != nil || cur.Supervision.Waits == nil {
+		t.Fatalf("waiting task = %+v", cur)
+	}
+	waitFor(t, "the owner-action push", func() bool { return len(f.pushed()) == 1 })
+}
+
 // pick from) was accepted as done, and the decision was lost with it. The judge's needs_user is kept on the ledger, and
 // accepting is refused while it holds; a decision for the owner is what the review has to be.
 func TestAcceptedIsRefusedWhileTheWorkWaitsOnTheOwner(t *testing.T) {
@@ -38,7 +95,7 @@ func TestAcceptedIsRefusedWhileTheWorkWaitsOnTheOwner(t *testing.T) {
 	if w.Reason != "两版草稿等用户挑一版再发" || w.At.IsZero() || w.Work.IsZero() {
 		t.Fatalf("waits = %+v", w)
 	}
-	if health, _ := taskHealth(todoNow(s, todo.ID), nil, time.Now()); health != "停下等用户拍板，别直接验收" {
+	if health, _ := taskHealth(todoNow(s, todo.ID), nil, time.Now()); health != "等你处理" {
 		t.Fatalf("snapshot health = %q", health)
 	}
 

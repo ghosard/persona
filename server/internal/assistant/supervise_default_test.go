@@ -9,9 +9,9 @@ import (
 	"github.com/nwverse/persona/server/internal/proto"
 )
 
-// A task an ordinary conversation (neither the main one nor a leader) hands out with task_plan is that conversation's
-// to supervise: it has a ledger, its supervision messages go back to it, and it reviews it with task_review.
-func TestSideConversationSupervisesItsOwnTask(t *testing.T) {
+// A task an ordinary conversation hands out with task_plan keeps that conversation as its origin, but the main
+// conversation supervises and reviews it (#5732).
+func TestSideConversationTaskIsSupervisedByMain(t *testing.T) {
 	s, f := newQuietService(t)
 	ctx := context.Background()
 	f.judge = `{"verdict":"done","reason":"PR 已合并"}`
@@ -26,34 +26,37 @@ func TestSideConversationSupervisesItsOwnTask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(res, "You supervise them: a supervision message comes when one needs you") {
-		t.Fatalf("the planning conversation is not told it supervises: %s", res)
+	if !strings.Contains(res, "The main conversation supervises them") {
+		t.Fatalf("the planning conversation is not told who supervises: %s", res)
 	}
 	waitFor(t, "the link", func() bool { return len(onlyTodo(s).Agents) == 1 })
 	todo := onlyTodo(s)
-	if v := todo.Supervision; v == nil || v.Supervisor != "side1" || todo.Origin != "side1" || len(v.DoneWhen) != 1 {
+	if v := todo.Supervision; v == nil || v.Supervisor != "conv1" || todo.Origin != "side1" || len(v.DoneWhen) != 1 {
 		t.Fatalf("ledger = %+v (origin %q)", todo.Supervision, todo.Origin)
 	}
 
-	// Its supervision message goes back to the side conversation, not to the main one.
+	// The supervision message goes only to the main conversation.
 	agentTurn(s, f, proto.StatusWorking, "", 0)
 	agentTurn(s, f, proto.StatusDone, "做完了，PR https://github.com/o/r/pull/7 已合并", 0)
-	waitFor(t, "the side conversation's supervision message", func() bool {
-		for _, n := range f.noticesTo("side1") {
+	waitFor(t, "the main conversation's supervision message", func() bool {
+		for _, n := range f.noticesTo("conv1") {
 			if strings.Contains(n, "📋 督办") {
 				return true
 			}
 		}
 		return false
 	})
-	for _, n := range f.noticesTo("conv1") {
+	for _, n := range f.noticesTo("side1") {
 		if strings.Contains(n, "📋 督办") {
-			t.Fatalf("the main conversation got the side conversation's supervision message:\n%s", n)
+			t.Fatalf("the side conversation got the supervision message:\n%s", n)
 		}
 	}
 
-	// The side conversation reviews it; nobody gets an end notice (it supervised it itself).
-	if _, err := runJSON(t, s, "side1", "task_review", map[string]any{"todo_id": todo.ID, "verdict": "accepted", "note": "PR 已合并",
+	// The origin cannot accept and close its own task; the main reviewer can, and the origin hears the outcome.
+	if _, err := runJSON(t, s, "side1", "task_review", map[string]any{"todo_id": todo.ID, "verdict": "accepted"}); err == nil {
+		t.Fatal("the side conversation accepted a main-supervised task")
+	}
+	if _, err := runJSON(t, s, "conv1", "task_review", map[string]any{"todo_id": todo.ID, "verdict": "accepted", "note": "PR 已合并",
 		"checks": []map[string]any{{"criterion": "PR 合并到 main", "met": true, "evidence": "pull/7"}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -61,13 +64,11 @@ func TestSideConversationSupervisesItsOwnTask(t *testing.T) {
 		t, ok := s.todoNow(todo.ID)
 		return ok && t.DoneAt != nil
 	})
-	if n := endNotices(f, "side1"); len(n) != 0 {
-		t.Fatalf("the side conversation got an end notice for its own task:\n%s", strings.Join(n, "\n"))
-	}
+	waitFor(t, "the origin's end notice", func() bool { return len(endNotices(f, "side1")) == 1 })
 }
 
-// The main conversation's own tasks, and a leader's, are as before: no end notice anywhere, the supervisor is the
-// conversation that planned them. A hub with no main conversation changes nothing for a side conversation's own task.
+// Every conversation's plan defaults to the main conversation's supervision. Only a task leader's worker keeps its
+// Agent supervisor; without a main conversation there is no conversation supervisor to assign (#5732).
 func TestPlanSupervisorDefaults(t *testing.T) {
 	s, f := newQuietService(t)
 	ctx := context.Background()
@@ -78,23 +79,46 @@ func TestPlanSupervisorDefaults(t *testing.T) {
 		conv, parent, want string
 		ok                 bool
 	}{
-		{"side1", "", "side1", true},   // a live side conversation supervises its own task
-		{"gone", "", "conv1", true},    // no live conversation to tell: the main conversation as before (#4669)
-		{"conv1", "", "", false},       // the main conversation supervises its own (supervises)
-		{"side1", "box/s1", "", false}, // a worker's leader supervises it
-		{"", "", "", false},            // no conversation at all
-		{"lead1", "", "", false},       // a leader supervises its own (supervises)
+		{"side1", "", "conv1", true},
+		{"gone", "", "conv1", true},
+		{"conv1", "", "conv1", true},
+		{"side1", "box/s1", "", false},
+		{"", "", "", false},
+		{"lead1", "", "conv1", true},
 	} {
 		if got, ok := s.defaultPlanSupervisor(ctx, c.conv, c.parent); got != c.want && ok || ok != c.ok {
 			t.Errorf("defaultPlanSupervisor(%q, %q) = %q %v, want %q %v", c.conv, c.parent, got, ok, c.want, c.ok)
 		}
 	}
 	setSettings(t, s, func(v *Settings) { v.Main = "" })
-	if got, ok := s.defaultPlanSupervisor(ctx, "side1", ""); !ok || got != "side1" {
-		t.Fatalf("no main conversation, a live side conversation: %q %v, want side1", got, ok)
+	if got, ok := s.defaultPlanSupervisor(ctx, "side1", ""); ok || got != "" {
+		t.Fatalf("no main conversation: %q %v, want no supervisor", got, ok)
 	}
-	if _, ok := s.defaultPlanSupervisor(ctx, "gone", ""); ok {
-		t.Fatal("no main conversation and no live conversation, yet a supervisor")
+}
+
+// Open tasks written before universal main supervision are rehomed without losing their criteria. Explicit leader
+// assignments and task-leader workers keep their specialized supervisor (#5732).
+func TestOpenLegacySideTaskRehomesToMain(t *testing.T) {
+	s, _, todo := newSupervisedService(t)
+	ctx := context.Background()
+	setSettings(t, s, func(v *Settings) { v.Leaders = []string{"lead1"} })
+	if _, _, err := s.updateSupervision(ctx, todo.ID, func(v *Supervision) bool {
+		v.Supervisor = "side1"
+		return true
+	}); err != nil {
+		t.Fatal(err)
+	}
+	putTodo(s, Todo{ID: "explicit-leader", Origin: "lead1", Supervision: &Supervision{Supervisor: "lead1"}})
+	putTodo(s, Todo{ID: "leader-worker", Origin: "conv1", Supervision: &Supervision{Supervisor: "box/leader-agent"}})
+	s.rehomeSupervisedTodos(ctx)
+	if got := todoNow(s, todo.ID).Supervision; got.Supervisor != "conv1" || len(got.DoneWhen) != 2 || got.ExpectMinutes != 30 {
+		t.Fatalf("rehomed ledger = %+v", got)
+	}
+	if got := todoNow(s, "explicit-leader").Supervision.Supervisor; got != "lead1" {
+		t.Fatalf("explicit leader changed to %q", got)
+	}
+	if got := todoNow(s, "leader-worker").Supervision.Supervisor; got != "box/leader-agent" {
+		t.Fatalf("task-leader worker changed to %q", got)
 	}
 }
 

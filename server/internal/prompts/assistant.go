@@ -179,6 +179,10 @@ type SnapshotTask struct {
 	// Workflows: that agent's background workflow runs still running (#2935): its turn ended to wait for them.
 	Workflows []SnapshotWorkflow
 	Link      string // the todo's page in the hub's web app ("" when the hub has no public_url)
+	// Cancellation and brief lineage keep the history visible in the same snapshot as the state (#5732).
+	CancelledReason                string
+	Continues, ContinuesLink       string
+	SupersededBy, SupersededByLink string
 	// Health: how a task the main conversation supervises stands (normal, stuck N minutes, waiting for an answer, to accept, rework round N, your call,
 	// accepted; #3124), "" for any other; DoneWhen how many criteria it has.
 	Health   string

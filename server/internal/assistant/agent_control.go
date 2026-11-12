@@ -174,6 +174,13 @@ func (s *Service) adoptAgent(ctx context.Context, self string, am Device, c prot
 // a task by itself, agent_tasks.go).
 func (s *Service) adoptAgentAs(ctx context.Context, self string, am Device, c proto.Session, title, prompt, notes string, doneWhen []string,
 	expect int, update, quiet bool) (Todo, bool, error) {
+	return s.adoptAgentFor(ctx, self, self, am, c, title, prompt, notes, doneWhen, expect, update, quiet)
+}
+
+// adoptAgentFor is adoptAgentAs with the todo's origin and supervisor kept separate (#5732). A side conversation
+// keeps its dispatch origin while the main conversation supervises the new task.
+func (s *Service) adoptAgentFor(ctx context.Context, self, supervisor string, am Device, c proto.Session, title, prompt, notes string, doneWhen []string,
+	expect int, update, quiet bool) (Todo, bool, error) {
 	if err := s.ensureTodosLoaded(ctx); err != nil {
 		return Todo{}, false, err
 	}
@@ -197,6 +204,7 @@ func (s *Service) adoptAgentAs(ctx context.Context, self string, am Device, c pr
 		s.setTaskStageKind(ctx, t.ID, "", "", taskStageKind(false, v.DoneWhen, t.PRURL), false)
 		return t, false, nil
 	}
+	previous, continuing := s.closedTodoOfAgent(am.ID, c.SessionID)
 	title, retitle := s.adoptedTitle(ctx, c, title, prompt)
 	todo, err := s.newTodo(ctx, title, notes, self, "", quiet || s.quietTask(ctx, self))
 	if err != nil {
@@ -206,7 +214,7 @@ func (s *Service) adoptAgentAs(ctx context.Context, self string, am Device, c pr
 		s.nameTodoLater(ctx, todo.ID, title, cmp.Or(strings.TrimSpace(prompt), title))
 	}
 	v, _, err := s.updateSupervision(ctx, todo.ID, func(v *Supervision) bool {
-		v.Supervisor, v.DoneWhen, v.ExpectMinutes = self, doneWhen, expect
+		v.Supervisor, v.DoneWhen, v.ExpectMinutes = supervisor, doneWhen, expect
 		return true
 	})
 	if err != nil {
@@ -215,7 +223,14 @@ func (s *Service) adoptAgentAs(ctx context.Context, self string, am Device, c pr
 	}
 	s.setTaskStageKind(ctx, todo.ID, "", "", taskStageKind(false, doneWhen, todo.PRURL), false)
 	todo.Supervision = &v
-	s.briefFor(ctx, s.callerOrigin(ctx, self), todo, doneWhen, expect) // before its agent is linked (task_brief.go)
+	if continuing {
+		if err := s.continueBriefFor(ctx, self, previous, todo, notes, doneWhen, expect); err != nil {
+			s.dropAdoption(ctx, todo.ID, err)
+			return Todo{}, false, fmt.Errorf("continue the previous task: %w", err)
+		}
+	} else {
+		s.briefFor(ctx, s.callerOrigin(ctx, self), todo, doneWhen, expect) // before its agent is linked (task_brief.go)
+	}
 	if err := s.linkTodoAgent(ctx, todo.ID, am.ID, c.SessionID, title, c.Cwd, c.Agent); err != nil {
 		s.dropAdoption(ctx, todo.ID, err)
 		return Todo{}, false, fmt.Errorf("link the agent: %w", err)
@@ -280,14 +295,10 @@ type handedTask struct {
 	wake string
 }
 
-// sendTaskAllowed refuses agent_send's task before anything is sent: only the main conversation supervises; an agent
-// working for the user's own todo or another conversation's task stays theirs; one on a task of self's with another
-// title would put other work under that task (it is not, so it is not lost when that task is closed); and /exit is no
-// work. A plain agent_send still goes in each case.
+// sendTaskAllowed refuses agent_send's task before anything is sent: an agent working for the user's own todo or
+// another conversation's task stays theirs; one on a task of self's with another title would put other work under
+// that task; and /exit is no work. Any conversation may hand work out, with main supervising it (#5732).
 func (s *Service) sendTaskAllowed(ctx context.Context, self string, am Device, c proto.Session, task sendTask, text string) error {
-	if !s.isMain(ctx, self) {
-		return fmt.Errorf("only the main conversation hands out tasks: send it without task")
-	}
 	if exitText(text) {
 		return fmt.Errorf("%s closes the agent, it hands it no work: send it without task", strings.TrimSpace(text))
 	}
@@ -377,7 +388,11 @@ func (s *Service) adoptedTitle(ctx context.Context, c proto.Session, given, prom
 // todo's notes, and its title when task has none. An agent on a task of self's stays on it, unchanged until the send.
 func (s *Service) handTask(ctx context.Context, self string, am Device, c proto.Session, task sendTask, text string) (*handedTask, error) {
 	// Decided under adoptMu (adoptAgent): another hand-off may have put the agent on a task since sendTaskAllowed.
-	todo, made, err := s.adoptAgent(ctx, self, am, c, task.Title, text, text, task.DoneWhen, task.ExpectMinutes, false)
+	supervisor := s.settings(ctx).Main
+	if supervisor == "" {
+		supervisor = self
+	}
+	todo, made, err := s.adoptAgentFor(ctx, self, supervisor, am, c, task.Title, text, text, task.DoneWhen, task.ExpectMinutes, false, false)
 	if err != nil {
 		return nil, fmt.Errorf("%w; nothing was sent", err)
 	}
@@ -404,6 +419,9 @@ func (h *handedTask) sent(ctx context.Context, s *Service, text string) string {
 	refused := ""
 	if h.made {
 		s.taskCard(ctx, h.self, h.todo.ID, h.wake)
+		if h.todo.Supervision != nil && h.todo.Supervision.Supervisor != h.self {
+			s.taskCard(ctx, h.todo.Supervision.Supervisor, h.todo.ID, h.wake)
+		}
 	} else {
 		doneWhen, expect := cleanDoneWhen(h.task.DoneWhen), max(0, min(h.task.ExpectMinutes, 24*60))
 		s.releaseHold(ctx, h.todo.ID)                                            // the supervisor sent its agent on: follow-ups go again (decision.go)
@@ -490,6 +508,30 @@ func (s *Service) openTodoOfAgent(mid, sid string) (Todo, bool) {
 		return Todo{}, false
 	}
 	return copyTodoLocked(t), true
+}
+
+// closedTodoOfAgent is the latest assistant task this agent carried before its new card. It supplies the source of a
+// take-over; a user's manual to-do is never adopted into assistant history (#5732).
+func (s *Service) closedTodoOfAgent(mid, sid string) (Todo, bool) {
+	s.todos.mu.RLock()
+	defer s.todos.mu.RUnlock()
+	var best Todo
+	found := false
+	for _, t := range s.todos.todos {
+		if t.DoneAt == nil || t.Origin == "" {
+			continue
+		}
+		for _, a := range t.Agents {
+			if a.MachineID != mid || a.SessionID != sid {
+				continue
+			}
+			if !found || t.DoneAt.After(*best.DoneAt) || t.DoneAt.Equal(*best.DoneAt) && t.UpdatedAt.After(best.UpdatedAt) {
+				best, found = copyTodoLocked(t), true
+			}
+			break
+		}
+	}
+	return best, found
 }
 
 // criteriaWords is done_when as the tool's answer says it: the new list, else the ledger's, else that there is none.

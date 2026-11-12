@@ -39,42 +39,57 @@ func (s *Service) supervises(ctx context.Context, id string) bool {
 	return s.isMain(ctx, id) || s.isLeader(ctx, id)
 }
 
-// defaultPlanSupervisor is who supervises a task conversation hands out with task_plan when conversation does not supervise
-// (supervises): that conversation itself, so a side conversation follows up and reviews the work it dispatched. None for
-// a task leader's worker (parent set: its leader's agent supervises it), a reporting conversation's task (its notices
-// go back to it, #4101) or a plan with no conversation. A planning conversation that is not a live assistant
-// conversation cannot be told anything, so its task stays the main conversation's (#4669), and so does what the
-// background supervisor hands out: nothing is written on a task for it (supervise_background.go). digestTo sends the
-// main conversation's own to the background supervisor while there is one.
+// defaultPlanSupervisor is the main conversation for every task a conversation hands out (#5732). Only a task
+// leader's worker keeps its leader Agent as supervisor, and a plan with no conversation has no supervisor to assign.
+// The planning conversation remains the todo's origin and hears the outcome; supervision and acceptance stay in main.
 func (s *Service) defaultPlanSupervisor(ctx context.Context, conversation, parent string) (string, bool) {
 	if parent != "" || conversation == "" {
 		return "", false
 	}
-	if _, reports := s.reporterOf(ctx, conversation); reports {
-		return "", false
-	}
-	if s.supervises(ctx, conversation) {
-		return "", false // the main conversation and leaders supervise their own (supervises)
-	}
-	if c, ok := s.session(ctx, s.settings(ctx).MachineID, conversation); ok && c.Assistant && !s.isBackground(ctx, conversation) {
-		return conversation, true
-	}
 	main := s.settings(ctx).Main
-	return main, main != "" && main != conversation
+	return main, main != ""
 }
 
-// digestTo is the conversation signal g goes to, with cfg the settings in effect: the one it names (To), else its task's
-// supervisor when that is a leader or another side conversation, unless the main conversation handles it (its needs_user,
-// a start to remedy, a task waiting for the user); else, for a task whose ledger names the main conversation, the
-// background supervisor, or the main conversation while there is none (ownSupervisor, supervise_background.go).
+// rehomeSupervisedTodos brings open legacy side-supervised tasks under main without rewriting their review state or
+// criteria. Explicit leader assignments and task-leader workers are the two specialized topologies to keep (#5732).
+func (s *Service) rehomeSupervisedTodos(ctx context.Context) {
+	main := s.settings(ctx).Main
+	if main == "" {
+		return
+	}
+	for _, t := range s.todosOf(ctx, "*") {
+		if t.DoneAt != nil || t.Supervision == nil {
+			continue
+		}
+		sup := t.Supervision.Supervisor
+		_, _, worker := parseLeaderRef(sup)
+		if sup == main || worker || s.isLeader(ctx, sup) {
+			continue
+		}
+		if _, _, err := s.updateSupervision(ctx, t.ID, func(v *Supervision) bool {
+			if v.Supervisor == main {
+				return false
+			}
+			v.Supervisor = main
+			return true
+		}); err != nil {
+			s.logf("task %s: rehome supervision: %v", t.ID, err)
+			continue
+		}
+		if t.Origin != main {
+			s.taskCard(ctx, main, t.ID, "")
+		}
+	}
+}
+
+// digestTo routes assistant-dispatched task supervision to the main conversation (#5732). Explicit card rungs (g.To)
+// keep their special target; a manually started Agent the owner explicitly put under a leader keeps that leader. Task
+// leaders' Agent-supervised workers are handled by leaderRoute before this function.
 func (s *Service) digestTo(cfg Settings, g superviseSignal) string {
-	own := s.ownSupervisor(cfg)
 	if g.To != "" {
-		switch {
-		case g.Kind == sigDecide && g.To == cfg.Main:
-			return own // a task leader's decision for the conversation above it, whose task is one no leader conversation supervises
-		case g.To == cfg.BackgroundSupervisor && g.To != own:
-			return cfg.Main // named the background supervisor, which was switched off or moved meanwhile
+		if g.To == cfg.BackgroundSupervisor && g.To != cfg.Main &&
+			(cfg.MainSupervisesOwnTasks != nil && *cfg.MainSupervisesOwnTasks || cfg.BackgroundSupervisorMachineID != cfg.MachineID) {
+			return cfg.Main // a legacy card named a background supervisor that was switched off or moved
 		}
 		return g.To
 	}
@@ -82,22 +97,15 @@ func (s *Service) digestTo(cfg Settings, g superviseSignal) string {
 	case sigEscalated, sigFailed, sigStarted, sigLeaderStuck:
 		return cfg.Main
 	}
-	t, ok := s.todoNow(g.Todo)
-	if !ok || t.Supervision == nil {
-		return cfg.Main
+	if t, ok := s.todoNow(g.Todo); ok && t.Supervision != nil {
+		if sup := t.Supervision.Supervisor; sup != cfg.Main && slices.Contains(cfg.Leaders, sup) {
+			if t.Supervision.state(t) == reviewNeedsUser {
+				return cfg.Main
+			}
+			return sup
+		}
 	}
-	lead := t.Supervision.Supervisor
-	// A supervisor is the conversation that handed the task out: the main conversation, a leader, or any other
-	// conversation (sendDigest falls back to the main one when that conversation is gone). The main conversation's own
-	// go to the background supervisor while there is one. A task leader's agent never reaches this: leaderRoute takes
-	// its workers' signals first.
-	if lead == "" || lead == cfg.Main {
-		return own
-	}
-	if t.Supervision.state(t) == reviewNeedsUser {
-		return cfg.Main
-	}
-	return lead
+	return cfg.Main
 }
 
 // escalatedIn: one of the entries is a leader's needs_user.

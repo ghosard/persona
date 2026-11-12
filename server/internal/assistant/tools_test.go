@@ -70,6 +70,34 @@ func TestAgentStartAdoptsTheSessionThatStartedLate(t *testing.T) {
 	}
 }
 
+// An unanswered start still has its task from before the request. When the session appears later, its persisted
+// creation id links it back to that same card without guessing from cwd or adopting a manual session (#5732).
+func TestAgentStartUnknownKeepsPendingTaskAndLinksByCreationID(t *testing.T) {
+	s, f := newQuietService(t)
+	shortAgentStartTimeout(t)
+	f.slowStart = true
+	res, err := s.runTool(context.Background(), "server", "conv1", "agent_start",
+		json.RawMessage(`{"machine":"box","cwd":"/code/app","prompt":"看看 CI"}`))
+	if err != nil || !strings.Contains(res, "may already be starting") {
+		t.Fatalf("unknown start: res=%q err=%v", res, err)
+	}
+	todo := onlyTodo(s)
+	if todo.Origin != "conv1" || todo.Supervision == nil || todo.Supervision.Supervisor != "conv1" || len(todo.Agents) != 0 {
+		t.Fatalf("pending task = %+v", todo)
+	}
+	if len(f.starts) != 1 || f.starts[0]["creation_id"] != todo.ID || f.starts[0]["incarnation"] == "" {
+		t.Fatalf("start lacks task identity: %+v", f.starts)
+	}
+
+	// The session list arrives later with the node's persisted creation identity. It joins the pending card directly.
+	s.autoLinkTodos("box", []proto.Session{{SessionID: "s-late", MachineID: "box", Cwd: "/code/app", Agent: "claude",
+		Hierarchy: &proto.SessionHierarchy{CreationID: todo.ID}, StartedByPersona: true, Status: proto.StatusWorking, UpdatedAt: time.Now()}})
+	got := todoNow(s, todo.ID)
+	if len(got.Agents) != 1 || got.Agents[0].SessionID != "s-late" || got.Agents[0].Source != "assistant_start" {
+		t.Fatalf("late session not linked: %+v", got)
+	}
+}
+
 // Definite failures stay errors: a request the node refused before running anything, and an unreachable machine
 // (nothing was started) — never a neutral "may be starting" result.
 func TestAgentStartDefiniteFailuresStayErrors(t *testing.T) {

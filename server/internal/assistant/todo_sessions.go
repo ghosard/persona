@@ -166,14 +166,22 @@ func (s *Service) autoLinkTodos(machine string, sessions []proto.Session) bool {
 		}
 		key := [2]string{machine, c.SessionID}
 
-		// 1. Spawned derivation: <todo_id>@<parent machine>/<parent session>
+		// 1. Assistant start: a to-do made before session.start carries the same creation id. This links an
+		// unanswered start without guessing from cwd or adopting a manually opened session (#5732).
+		if creationID := c.CreationID(); creationID != "" && s.todos.activeBySession[key] == "" {
+			if target, ok := s.todos.todos[creationID]; ok && target.DoneAt == nil {
+				link(c, target, "assistant_start", creationID)
+			}
+		}
+
+		// 2. Spawned derivation: <todo_id>@<parent machine>/<parent session>
 		if todoID, parent, ok := strings.Cut(c.SpawnFrom, "@"); ok && s.todos.activeBySession[key] == "" {
 			if target, ok := s.todos.todos[todoID]; ok && target.DoneAt == nil {
 				link(c, target, "spawned", parent)
 			}
 		}
 
-		// 2. Space auto link
+		// 3. Space auto link
 		if s.todos.activeBySession[key] == "" {
 			if spKey := sessionSpaceKey(machine, c); spKey != "" {
 				if targetID, ok := s.todos.spacesByKey[spKey]; ok {

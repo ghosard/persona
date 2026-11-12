@@ -25,6 +25,10 @@ func TestCancelledTaskStaysClosed(t *testing.T) {
 			todoStores(t, func(t *testing.T, e *todoEnv, database *db.DB) {
 				ctx := context.Background()
 				s, f := e.s, e.f
+				setSettings(t, s, func(v *Settings) { v.Main = "conv1" })
+				if !tc.supervised {
+					setSettings(t, s, func(v *Settings) { v.Main = "conv-main" }) // a legacy task with no ledger
+				}
 				todo, err := s.createTodo(ctx, "Update the report", "Update the report and check the results.", "conv1", "")
 				if err != nil {
 					t.Fatal(err)
