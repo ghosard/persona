@@ -20,8 +20,8 @@ Pinned, All Chats and the Agents list in one column, as in the web app. Design a
 
 ## 2. Done on the branch
 
-Branch state: merged with `origin/main` up to commit `c250954f7` (merge only, never rebased). `main` has moved on since
-(about 50+ commits touching `AssistantView`, `ChatsView`, `RootView`), so a final merge is still due (section 6).
+Branch state: merged with `origin/main` up to commit `f81398879` (2026-11-13; merge only, never rebased or force-pushed).
+If `main` moves again before the PR, merge it once more (section 6).
 
 The commits of the last stretch (`git log --first-parent`):
 
@@ -33,7 +33,10 @@ The commits of the last stretch (`git log --first-parent`):
 | `c250954f7` | Merge `origin/main`: the Recordings row follows #5517 (named Recordings, opens the page); the drawer's `collapse` is left out (the one sidebar folds itself). |
 | `06f22a6b3` | Tests after #5587 (the list shows only the current assistant's computers; tests open an agent of the current assistant), the iPad top-strip check samples under the top bar, ReturnToChat scrolls until the row can be tapped and times its tree swap after the pick. |
 | `3570fe23a` | **One color down the sidebar, and a foot without a band** (below). |
-| (this file) | Handoff. |
+| `4878dafb3` | Handoff. |
+| `ad1f80d94` | Merge `origin/main` (110 commits). Conflicts in `ChatsView` and `RootView` against #5641 (selecting Agents returns to the list): `ChatsView` keeps main's `agentNavigationLink` and folds the one sidebar's `openLink` into it (under the one sidebar a row is always a button that sets the bound path); `RootView` keeps the one sidebar on iOS and main's `selectHomeTab` tab binding elsewhere. `AgentsTabNavigationTests.testNativeTabReselectionAndSwitchBackShowList` skips under the one sidebar (no tabs there); `test_apple_rename.py` expects main's tab binding; `DESIGN_SYSTEM.md` 3.5 names the one sidebar. |
+| `011dca2f6`, `72c6d0b43` | Merge `origin/main` again (6 commits, no conflicts; the second brings main's own build fix #5899). |
+| `5eaff049d` | **The open Duo's sidebar is 320 pt** (below). |
 
 ### The color fix (`3570fe23a`)
 
@@ -54,25 +57,39 @@ has no background: its buttons float on the column and the rows scroll on behind
 Files: `apple/Persona/Views/OneSidebar.swift`, `apple/Persona/Views/SplitNavigation.swift`, `docs/apple/ios.md` (#4855 entry).
 The other styles keep their column as it was (the foot is transparent in all styles).
 
-## 3. Test status (on `3570fe23a`, mock hub, simulators)
+### The width (`5eaff049d`)
+
+The owner found the column too narrow on the open Duo and asked for ChatGPT's width there: ChatGPT's sidebar on the open Duo
+upright (669 × 951 pt) is **320 pt** wide (48 % of the screen). Ours had no width of its own and took the system's, about
+199 pt upright and 239 pt on its side. Now `Theme.Size.sidebarPhone` = **320 pt** is the open Duo's column in both postures
+(`SidebarWidth`); a width dragged on the handle still wins, and a double tap on it gives 320 back. The iPad keeps its
+340–480 pt (400 measured), already wider. The narrow-column fallbacks (`ViewThatFits`) stay for a column dragged narrower.
+`OneSidebarTests.testTheColumnHasThePlacesPinnedAndAgents` checks the width (320 ± 4 pt on the Duo, at least 320 on the
+iPad) and the tests launch with `-agents.list.width 0`. Docs: `docs/apple/ios.md`, "One sidebar" ("The column's width").
+
+## 3. Test status (on `5eaff049d`, mock hub with `MOCK_LEADERS=1`, simulators, Xcode 27.1; 26.0 not verified)
+
+One `build-for-testing`, then `test-without-building` per device and posture.
 
 | Where | Groups | Result |
 |---|---|---|
 | iPad (iPad Pro 13-inch) | `OneSidebarTests`, `DuoOpenChromeTests`, `SplitDividerTests`, `IPadLayoutTests`, `IPadSidebarTests`, `TreeSwapFoldTests`, `ReturnToChatTests` | 26 run: **18 passed, 7 skipped, 1 failed** |
 | iPhone Duo, Open, upright | `OneSidebarTests`, `DuoOpenChromeTests`, `SplitDividerTests` | 17 run: **16 passed, 1 skipped, 0 failed** |
-| iPhone Duo, Open, on its side | same three | **not run on `3570fe23a`** (see section 4); on `06f22a6b3` all applicable passed |
+| iPhone Duo, Open, on its side (`TEST_RUNNER_PERSONA_ORIENTATION=landscape`) | same three | 17 run: **15 passed, 2 skipped, 0 failed** |
+
+Before the width change, on the merge `72c6d0b43`, the Duo gave the same counts upright and on its side.
 
 - Skips are by design: Duo-only tests skip on the iPad; upright-only and beside-the-page-only tests skip in the other posture.
 - The one failure, `TreeSwapFoldTests.testHealthReportsStillGoUpAfterAFold`, **also fails on `main`**; not this PR's.
 
-## 4. Not done
+## 4. Status
 
-1. The Duo **on its side** UI tests on the latest code (the three groups above).
-2. The two landscape screenshots, `duo-landscape-light.png` and `duo-landscape-dark.png`. Any earlier landscape shots were
-   taken before the color fix and are **void**. The four other shots (iPad and Duo upright, light and dark) were retaken
-   after it, but they live on the other machine: retake all six on yours (section 5).
+The six screenshots and the montage were retaken on `5eaff049d` (2026-11-13) and checked: the size, one top-left button,
+one color down the column (dark 23,23,23, light 249,249,249), and the column's width (iPad 400 pt, the Duo 320 pt upright
+and on its side). They live outside the repository with the owner, with short videos of the one sidebar in use, and are
+**waiting for the owner's review**. Nothing has been posted on GitHub; no PR yet.
 
-Why it stopped: putting the Duo into the Open posture needs the Device Hub window (Xcode's Devices window). No command line
+Putting the Duo into the Open posture needs the Device Hub window (Xcode's Devices window). No command line
 way was found: `simctl` has no posture command, `simctl io … screenConfig power` changes a panel's power but not the
 posture, `devicectl` only reads the hinge angle, and the device type profile has no posture field (the Duo always boots
 Closed). Rotation does have a command (`xcrun devicectl device orientation set --device <UDID> landscapeLeft`), but only
@@ -150,13 +167,14 @@ xcrun simctl ui $U appearance $MODE
 xcrun simctl spawn $U defaults write "$PERSONA_BUNDLE_ID" agents.list.closed -bool NO
 xcrun simctl launch $U "$PERSONA_BUNDLE_ID" -AppleLanguages '(zh-Hans)' -AppleLocale zh_CN \
   -pairURL 'persona://pair?url=http%3A%2F%2F127.0.0.1%3A18842&token=mock' -tab assistant -app.tab assistant \
-  -dev.openChat '' -dev.grouping repo -agents.list.closed NO -ui.style glass
+  -dev.openChat '' -dev.grouping repo -agents.list.closed NO -agents.list.width 0 -ui.style glass
 sleep 12
 xcrun simctl io $U screenshot --display=$DISPLAY_N "$OUT"
 ```
 
 Files: `ipad-light.png`, `ipad-dark.png`, `duo-portrait-light.png`, `duo-portrait-dark.png`, `duo-landscape-light.png`,
-`duo-landscape-dark.png`. Check each before using it: the size (Duo 2853 × 2007 on its side, 2007 × 2853 upright), one
+`duo-landscape-dark.png`. Check each before using it: the size (Duo 2853 × 2007 on its side, 2007 × 2853 upright), the
+column's width (the Duo's screenshots are 3×, so 320 pt is 960 px; the iPad's 2×, 400 pt is 800 px), one
 top-left button, and **one color down the column** (status strip, header and rows the same: dark 23,23,23, light
 249,249,249; between the foot's buttons you see whatever row scrolled behind them). Set the appearance back to light after.
 Never commit screenshots or mockups.
@@ -206,8 +224,9 @@ Send the six paths (and the montage) to the owner and **stop** until they approv
 ## 6. Before merging (after the owner approves)
 
 1. Delete this file and `docs/handoff/4206-one-sidebar*` in a commit.
-2. `git fetch && git merge origin/main` (merge only; never rebase, never force-push). Resolve conflicts keeping main's
-   structure; rebuild; rerun the three groups on the iPad, the Duo upright and the Duo on its side.
+2. `git fetch && git merge origin/main` (merge only; never rebase, never force-push), if `main` moved since `f81398879`.
+   Resolve conflicts keeping main's structure; rebuild; rerun the three groups on the iPad, the Duo upright and the Duo on
+   its side.
 3. Local checks: `python3 scripts/test/test_doc_paths.py`, `test_doc_go_paths.py`, `test_doc_sections.py`,
    `test_doc_wire.py`, `scripts/test/test_apple_rename.py`, `python3 scripts/privacy_check.py`; `scripts/ci/apple.sh` where
    it runs. CI on the PR: hosted CI does not run on PRs here; follow `docs/operations/testing.md` ("Hosted CI").
@@ -221,8 +240,8 @@ Send the six paths (and the montage) to the owner and **stop** until they approv
 
    ## What changed and why
    (one sidebar replaces the Assistant | Agents switch; #4852 upright overlay; #4853 top margin on its side;
-   #4854 New Chat in the system's side column; #4855 the column's color, now one color on the Duo too; the one-button,
-   lost-agent and three-band fixes from section 2)
+   #4854 New Chat in the system's side column; #4855 the column's color, now one color on the Duo too; the open Duo's
+   column 320 pt, as ChatGPT's there; the one-button, lost-agent and three-band fixes from section 2)
 
    ## Principles self-check (docs/design/PRINCIPLES.md) and UI change self-check (docs/design/DESIGN_SYSTEM.md)
    ## Performance rules followed (docs/apple/performance.md)
@@ -235,7 +254,7 @@ Send the six paths (and the montage) to the owner and **stop** until they approv
 ## 7. Commits
 
 Identity: the GitHub account doing the work and its noreply address. Messages in English, ending with
-`Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>`. `git config core.hooksPath scripts/hooks` runs the
+`Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. `git config core.hooksPath scripts/hooks` runs the
 privacy scan on commit and push. Stage only your files; `apple/Persona.xcodeproj/` is generated, never committed.
 
 ## 8. Rules for this work
