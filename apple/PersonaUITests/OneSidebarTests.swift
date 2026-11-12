@@ -55,7 +55,8 @@ final class OneSidebarTests: XCTestCase {
     /// The column out, from the page's button if it is away.
     @MainActor private func bringColumnOut() {
         let main = element("sidebar-main")
-        if main.waitForHittable(timeout: 2) { return }
+        // The column can take a moment to take touches after a launch (seen on the iPad).
+        if main.waitForHittable(timeout: 5) { return }
         // Persona's page and Messages have their own button; a page pushed in Persona's stack (the Inbox) the system's.
         let back = app.buttons.matching(NSPredicate(format: "identifier IN %@ OR label IN %@", ["assistant-sidebar-button", "feishu-sidebar-button"],
                                                     ["显示边栏", "Show Sidebar"])).firstMatch
@@ -172,9 +173,10 @@ final class OneSidebarTests: XCTestCase {
         XCTAssertLessThan(new.frame.maxX, search.frame.minX)
         XCTAssertGreaterThan(new.frame.minY, window.maxY - 160, "the foot is not at the column's foot")
         shot("home")
-        // Folding the column and bringing it back from the page's own button.
+        // Folding the column and bringing it back from the page's button: its own, or the system's under side bars.
         collapse.tap()
-        let back = element("assistant-sidebar-button")
+        let back = app.buttons.matching(NSPredicate(format: "identifier == %@ OR label IN %@", "assistant-sidebar-button",
+                                                    ["显示边栏", "Show Sidebar"])).firstMatch
         XCTAssertTrue(back.waitForExistence(timeout: 5) && back.isHittable, "nothing on the page brings the column back")
         shot("folded")
         back.tap()
@@ -282,7 +284,9 @@ final class OneSidebarTests: XCTestCase {
         while selected.count == 0 && swipes < 8 { column.swipeUp(); swipes += 1 }
         XCTAssertEqual(selected.count, 1, "the open agent's row is not the one selected:\n\(app.debugDescription)")
         shot("agent")
-        for _ in 0..<swipes { column.swipeDown() }
+        // Back to the column's top: a swipe's momentum can stop short, leaving the row under the header.
+        let header = element("assistant-sidebar-collapse")
+        for _ in 0..<(swipes + 3) where !main.isHittable || main.frame.minY < header.frame.maxY { column.swipeDown() }
         main.tap()
         XCTAssertTrue(title.waitForNonExistence(timeout: 10), "Main Chat did not close the agent")
         XCTAssertTrue(main.waitForSelected(), "Main Chat is not the selected row")

@@ -717,12 +717,19 @@ sidebar. Code in `Persona/Views/OneSidebar.swift`; the column is the Agents list
   under the padding the handle's dragged width no longer reached the split. Persona's page shows New Chat (`assistant-new`) as the system navigation bar's
   `.topBarTrailing` item, title removed, so the system puts it in its side column under the clock and the camera and moves it with the island and the safe
   area (#4854, no offset of our own). That bar must stay shown there: `RootBarHidden` does not hide it (and drops a delayed hide once the page wants it
-  back), the hidden stack under the home (`SplitPlaceholder`) keeps its bar, and the assistant's `ChatView` shows its bar too. `AssistantTopBar` keeps a
-  blank in New Chat's place so the face stays centered. Upright and on the iPad New Chat stays in the page's top bar.
+  back), the hidden stack under the home (`SplitPlaceholder`) keeps its bar, and the assistant's `ChatView` shows its bar too. With that bar shown the split
+  puts its own Show Sidebar in the side column, as beside an agent's chat, so both top corners are the system's: `AssistantTopBar` draws neither its
+  sidebar button nor its New Chat there, and the face stays centered with nothing on either side. One button for the column at the top corner at a time
+  (two stacked Show Sidebar buttons were reported on 2026-11-12; `OneSidebarTests.testOneButtonForTheColumnAtATime`). Upright and on the iPad New Chat
+  stays in the page's top bar.
 - **The iPad column's color** (#4855, iPad and glass only): the column, its header and foot and the status-bar strip above it are `Theme.Shell.drawer`, a
   neutral near-white / near-black (`OneSidebarMetrics.padColumn`), not the blue-grey `Theme.systemSidebar`, which stays as it was for the Mac and the open Duo.
 - **Selection**: one row at a time looks chosen: the main row, a place or a Pinned row while Persona's page is shown, Messages while it is, the open agent's
   row while an agent is (`Theme.Tree.selected` on cards, `RepoTreeSelected` on tree rows; `.isSelected` for VoiceOver), in every grouping.
+- **Rows open through the path**: in the column an agent row is a button that sets the Agents page's bound path (`AgentsList.openLink`), not a
+  `NavigationLink(value:)`. A value link in the split's sidebar drives a selection of its own: opening a second agent over the first emptied the path
+  while the agent stayed on screen, so the column went back to Persona's tab and a fold or an unfold lost the chat (`ReturnToChatTests`, 2026-11-12).
+  The Mac's repo rows are buttons for the same reason.
 - **Menus**: the main row's long press holds the main conversation's menu, Copy Session ID, Copy Diagnostics and End… (`MainChatRowMenu`, shared with the iPhone's
   drawer); the page's face keeps its own (Knowledge, Details, Copy Directory, Copy Info). Agent rows keep theirs.
 - **Routes**: `PadRouter` takes Inbox and Settings (see "iPad"). Persona's page is built again each time an agent closes, so the last request it showed is kept

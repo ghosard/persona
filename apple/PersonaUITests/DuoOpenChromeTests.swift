@@ -92,9 +92,12 @@ final class DuoOpenChromeTests: XCTestCase {
 
         collapse.tap()
         XCTAssertTrue(collapse.waitForNonExistence(timeout: 5), "the column did not fold")
-        XCTAssertTrue(back.waitForExistence(timeout: 5) && back.isHittable, "nothing on the page brings the column back")
+        // The page's own button, or the system's under side bars (on its side), where the page leaves the corner to it.
+        let bringBack = app.buttons.matching(NSPredicate(format: "identifier == %@ OR label IN %@", "assistant-sidebar-button",
+                                                         ["显示边栏", "Show Sidebar"])).firstMatch
+        XCTAssertTrue(bringBack.waitForExistence(timeout: 5) && bringBack.isHittable, "nothing on the page brings the column back")
         shot("folded")
-        back.tap()
+        bringBack.tap()
         XCTAssertTrue(collapse.waitForExistence(timeout: 5), "the column did not come back")
     }
 

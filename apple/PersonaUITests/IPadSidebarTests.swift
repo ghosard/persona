@@ -17,7 +17,10 @@ final class IPadSidebarTests: XCTestCase {
         }
         app = XCUIApplication()
         let pair = "persona://pair?url=" + hub.addingPercentEncoding(withAllowedCharacters: .alphanumerics)! + "&token=mock"
-        app.launchArguments = ["-pairURL", pair, "-tab", "assistant"]
+        // Persona's page with the column out, whatever the last test left open: the one sidebar's home shows an agent
+        // reopened from the last launch, its rows away under the list's closed state.
+        app.launchArguments = ["-pairURL", pair, "-tab", "assistant", "-app.tab", "assistant", "-dev.openChat", "",
+                               "-agents.list.closed", "NO"]
     }
 
     override func tearDown() {

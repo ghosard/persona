@@ -1428,7 +1428,7 @@ private struct AgentsList: View {
             cardRow(ix)
         } else if let first = row.cards.first {
             if compact {
-                NavigationLink(value: first.sessionKey) {
+                openLink(first.sessionKey) {
                     CompactInteractionRow(interaction: first, machine: machine(first.machineRef)?.title, more: row.cards.count - 1)
                 }
                 #if os(macOS)
@@ -1463,7 +1463,7 @@ private struct AgentsList: View {
             .accessibilityIdentifier("agents.interaction")
         } else if compact {
             // Compact List: one row like an agent's; the chat answers it.
-            NavigationLink(value: ix.sessionKey) {
+            openLink(ix.sessionKey) {
                 CompactInteractionRow(interaction: ix, machine: machine(ix.machineRef)?.title)
             }
             #if os(macOS)
@@ -1508,7 +1508,7 @@ private struct AgentsList: View {
         let s = session(row.key)
         let place = s.flatMap { machine($0.machineRef)?.title }
         if compact {
-            NavigationLink(value: row.key) {
+            openLink(row.key) {
                 CompactWaitingRow(session: s, machine: place, since: row.since)
             }
             .listRowInsets(CompactList.rowInsets)
@@ -2969,8 +2969,21 @@ private struct AgentsList: View {
                 .macOptionClick { MacShellState.shared.chatWindow = s.key }
         }
         #else
-        NavigationLink(value: s.key) { content() }
+        openLink(s.key) { content() }
         #endif
+    }
+
+    /// A row that opens an agent. Beside the one sidebar (#4206) a button that sets the bound path, as the Mac's repo
+    /// rows do: a value link in the split's sidebar column drives a selection of its own and emptied the path when a
+    /// second agent opened over the first, so the page went back to Persona's tab and a fold lost the chat
+    /// (ReturnToChatTests). Elsewhere the value link, as it was.
+    @ViewBuilder private func openLink<Label: View>(_ key: SessionKey, @ViewBuilder label: () -> Label) -> some View {
+        if oneSidebarMode {
+            Button { openFromList(key) } label: { label().contentShape(Rectangle()) }
+                .buttonStyle(.plain)
+        } else {
+            NavigationLink(value: key) { label() }
+        }
     }
 }
 

@@ -56,14 +56,17 @@ struct OneSidebarHome: View {
     @Environment(AppModel.self) private var model
     @Environment(\.splitDetail) private var split
     @Environment(\.splitShowList) private var showList
+    @Environment(\.oneSidebarSideBars) private var sideBars
 
     var body: some View {
         if model.selectedTab == .feishu, LarkHomePreference.shared.shows {
             LarkConversationsView()
                 // Its own stack has no system button for the column: with the column away (folded, or slid off after the
-                // pick upright, #4852) the page's top corner brings it back, where Persona's page has its own.
+                // pick upright, #4852) the page's top corner brings it back, where Persona's page has its own. Not under
+                // side bars (the open Duo on its side): the split puts its own Show Sidebar in the side column there, and
+                // this one sat under it, two of them, as on Persona's page (`AssistantTopBar`).
                 .overlay(alignment: .topLeading) {
-                    if split?.listHidden == true, let showList {
+                    if split?.listHidden == true, !sideBars, let showList {
                         AssistantTopBar.circle(Theme.Icon.sidebar, label: String(localized: "Show Sidebar"), id: "feishu-sidebar-button") {
                             Haptics.tap()
                             showList.show()
