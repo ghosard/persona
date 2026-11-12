@@ -211,9 +211,10 @@ export async function brotliCopies(dir: string, files: string[]): Promise<{ file
  * counted the 69 B of room main had at 0bfcf2879 as its own, and #4743 (+37 B) used part of it, merged in between; ja
  * 593,057 B on main at 18de01b8d, with 0 B of room. And 94 B for the six-line composer (#5674, #5704, #5713: ja
  * 593,151 B on main at 5f60a1c45: the composer's fixed maximum-height token and manual-scroll measurement; the
- * layout is unchanged by this accounting). Raise it on purpose, in the change that needs it.
+ * layout is unchanged by this accounting). #5732 deliberately adds 149 B for the independent cancelled state / count and
+ * its three-language labels; the delivery and takeover UI remains lazy-loaded. Raise it on purpose, in the change that needs it.
  */
-export const FIRST_SCREEN_BUDGET = 593_151;
+export const FIRST_SCREEN_BUDGET = 593_300;
 
 // The hash in a built file's name: the 8 characters of Rollup's [hash] (url-safe base64) between "-" and the
 // extension, as vite.config.ts names every chunk and asset ("assets/[name]-[hash].js", "[name]-[hash][extname]").

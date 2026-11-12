@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // #3713: a to-do whose agent never started (the hub closes it, with its start error) waits on the owner in Needs you. Its
 // row reads open, not done, and says why in red; ticking it closes it for good (`done: true`, the hub clears the start
-// error). One whose work finished in a related to-do (the same plan) is history: Just finished, ticked, nothing asked.
+// error). One whose work finished in a related to-do (the same plan) is history: Done, ticked, nothing asked.
 // The hub is faked; the data made up.
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -79,10 +79,12 @@ describe("a to-do whose agent never started", () => {
     expect((patch?.[1] as { json?: unknown })?.json).toEqual({ done: true });
   });
 
-  it("goes with the work that finished in its row: Just finished, behind it, done", () => {
+  it("goes with the work that finished in its row: Done, behind it, done", async () => {
     expect(section("waiting")?.querySelector("[data-id=gone]")).toBeNull();
+    await act(async () => section("done")!.querySelector<HTMLElement>("button[aria-expanded]")!.click());
+    await flush();
     const r = row("done")!;
-    expect(section("just_done")?.contains(r)).toBe(true);
+    expect(section("done")?.contains(r)).toBe(true);
     expect(r.getAttribute("data-members")).toBe("2");
   });
 });

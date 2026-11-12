@@ -99,6 +99,30 @@ describe("To-dos grouped by 常驻", () => {
     expect(host.querySelector<HTMLInputElement>("[data-testid=todos-detail-column] input[type=text]")?.value).toBe("Infra");
   });
 
+  it("keeps cancelled out of Completed and shows its own fold and reason", async () => {
+    localStorage.setItem("persona.todos.grouping", "direction");
+    seed({ todos: [...TODOS, todo("t-cancelled", "Cancelled work", { done_at: at, done_by: "review", cancelled_at: at, cancelled_reason: "Not needed" })] });
+    await render();
+    expect(host.textContent).toContain(t("todos.done_section", { count: 1 }));
+    expect(host.textContent).toContain(t("todos.cancelled_section", { count: 1 }));
+    expect(host.textContent).not.toContain(t("todos.done_section", { count: 2 }));
+    expect(sections().some((s) => s.textContent?.includes("Cancelled work"))).toBe(false);
+    const fold = [...host.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === t("todos.cancelled_section", { count: 1 }));
+    await act(async () => fold!.click());
+    expect(host.textContent).toContain("Cancelled work");
+    expect(host.textContent).toContain("Not needed");
+  });
+
+  it("gives cancelled its own status section instead of mixing it into Just finished", async () => {
+    seed({ todos: [...TODOS, todo("t-cancelled", "Cancelled work", { done_at: at, done_by: "review", cancelled_at: at })] });
+    await render();
+    const cancelled = host.querySelector('[data-section="cancelled"]');
+    expect(cancelled).toBeTruthy();
+    await act(async () => cancelled!.querySelector("button")!.click());
+    expect(cancelled?.textContent).toContain("Cancelled work");
+    expect(host.querySelector('[data-section="done"]')?.textContent).not.toContain("Cancelled work");
+  });
+
   it("opens a row's menu on a right click, as the other groupings do", async () => {
     localStorage.setItem("persona.todos.grouping", "direction");
     await render();

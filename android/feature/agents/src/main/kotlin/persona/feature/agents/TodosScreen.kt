@@ -20,6 +20,9 @@ import persona.core.domain.tasks.Triage
 import persona.core.domain.tasks.TriageRule
 import persona.core.domain.tasks.TriageSection
 import persona.core.domain.tasks.acceptedAtRest
+import persona.core.domain.tasks.deliveredAwaitingReview
+import persona.core.domain.tasks.shownState
+import persona.core.domain.tasks.waitsForOwner
 import persona.core.domain.tasks.checksAsOpen
 import persona.core.domain.tasks.supersededFailedStarts
 import persona.core.domain.tasks.triageTodos
@@ -52,6 +55,7 @@ import persona.core.domain.tasks.sortedRows
 import persona.core.domain.tasks.weekStart
 import persona.core.contracts.*
 import persona.core.designsystem.*
+import persona.core.designsystem.icons.PersonaIcons
 import persona.core.designsystem.icons.PhIcons
 import persona.core.domain.answer.askingLine
 import persona.core.domain.answer.firstBySession
@@ -435,6 +439,7 @@ private val TriageSection.label: String @Composable get() = stringResource(when 
     TriageSection.Other -> R.string.agents_todos_section_other
     TriageSection.Shelved -> R.string.agents_todos_section_shelved
     TriageSection.Done -> R.string.agents_todos_done
+    TriageSection.Cancelled -> R.string.agents_todo_cancelled
 })
 
 /** The state colour a section's header borrows (the Board style draws it). */
@@ -489,7 +494,7 @@ private fun TodoTriageRow(
     val res = agentResources()
     // a failed start waiting on the owner reads open, says why in red, and its checkbox closes it (#3713)
     val finished = !todo.checksAsOpen(triage)
-    val state = todo.state(sessionLookup)
+    val state = todo.shownState(sessionLookup)
     val accepted = triage.rule == TriageRule.Accepted || todo.acceptedAtRest(sessionLookup)
     val urgent = mostUrgentAgent(todo, sessionLookup)
     val lastMoved = if (triage.last > 0) Instant.ofEpochMilli(triage.last) else todo.updated ?: todo.created
@@ -514,7 +519,9 @@ private fun TodoTriageRow(
                             },
                         contentAlignment = Alignment.Center,
                     ) {
-                        if (finished) {
+                        if (todo.isCancelled) {
+                            JIcon(PersonaIcons.end, null, size = ContentTokens.statusIcon, selected = true, tint = PersonaTheme.palette.ink3)
+                        } else if (finished) {
                             JIcon(PhIcons.CheckCircle, null, size = ContentTokens.statusIcon, selected = true, tint = PersonaTheme.palette.done.dot)
                         } else {
                             Box(Modifier.size(ContentTokens.statusIcon).border(ContentTokens.optionOutline, PersonaTheme.palette.ink3, CircleShape))
@@ -532,6 +539,9 @@ private fun TodoTriageRow(
                         // an accepted task the hub reopened with more work reads Accepted, not Follow up (#3156)
                         accepted && state != TodoState.Working && state != TodoState.NeedsYou ->
                             JTag(stringResource(R.string.agents_todo_state_accepted), Tone.Positive)
+                        todo.waitsForOwner() -> JTag(stringResource(R.string.agents_todos_section_waiting), status = Status.NeedsYou)
+                        todo.deliveredAwaitingReview(sessionLookup) -> JTag(stringResource(R.string.agents_todos_section_just_done), status = Status.Unread)
+                        todo.isCancelled -> JTag(stringResource(R.string.agents_todo_cancelled))
                         finished && todo.doneBy == "auto" -> JTag(stringResource(R.string.agents_todo_auto_done))
                         finished -> {}
                         // the hub closed it, yet it waits on the owner: not Done (#3713)
@@ -540,7 +550,11 @@ private fun TodoTriageRow(
                     }
                 }
                 if (finished) {
-                    todo.autoDoneReason?.let { reason ->
+                    todo.cancellationReason?.takeIf { it.isNotBlank() }?.let { reason ->
+                        Text(stringResource(R.string.agents_todo_cancelled_reason, reason), style = PersonaTheme.type.caption,
+                            color = PersonaTheme.palette.ink2, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(start = Tokens.Space.xxl))
+                    } ?: todo.autoDoneReason?.let { reason ->
                         Text(reason, style = PersonaTheme.type.caption, color = PersonaTheme.palette.ink2, maxLines = 2,
                             overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = Tokens.Space.xxl))
                     }

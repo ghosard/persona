@@ -17,7 +17,7 @@ const NAMES = ["需要你", "工作中", "完成未看", "已看", "未运行", 
 const OLD = ["等你", "在做", "待查看", "做完", "做完了", "做完了，还没看", "停着", "等你处理", "需要你处理", "正在工作", "待回答", "全部标为已读"];
 
 /** The same word meaning something else: a file marked reviewed, an inbox item's tier. */
-const OTHER_MEANING = new Set(["extensions-review.viewed", "lib-inbox.tier_action"]);
+const OTHER_MEANING = new Set(["extensions-review.viewed", "lib-inbox.tier_action", "todos.section_waiting"]); // task review uses 等你处理, distinct from an Agent's 需要你 (#5732)
 
 function others(): [string, string][] {
   const out: [string, string][] = [];

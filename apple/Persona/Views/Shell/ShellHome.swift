@@ -429,12 +429,12 @@ struct ShellDestinations: ViewModifier {
                 .navigationDestination(for: ShellRoute.self) { route in
                     switch route {
                     case .inbox: InboxPage(path: $path, accountState: accounts, embedded: true)
-                    case .todos: TodosView()
+                    case .todos: TodosView(openDetail: { path.append($0) })
                     case .machines: MachinesView()
                     case .extensionPage(let r): ExtensionNavPage(route: r)
                     }
                 }
-                .navigationDestination(for: TodoDetailRoute.self) { r in TodoDetailView(todoID: r.id) }
+                .navigationDestination(for: TodoDetailRoute.self) { r in TodoDetailView(todoID: r.id, openDetail: { path.append($0) }) }
                 .modifier(InboxDestinations(accounts: accounts.accounts))
                 .navigationDestination(for: MachineDetailRoute.self) { r in MachineDetailView(ref: r.ref) }
                 .navigationDestination(for: SessionKey.self) { key in ChatView(key: key).id(key) }

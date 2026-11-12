@@ -10,7 +10,7 @@ nonisolated enum TodoSection: String, CaseIterable, Sendable {
     case waiting
     /// An agent is running on it now.
     case working
-    /// Closed, accepted or deployed in the last 24 hours, or a turn nobody has seen / a review not done yet.
+    /// Delivered work still waiting to be seen or accepted; age never accepts it.
     case justDone = "just_done"
     /// Its work stopped at a pull request that is still open and nothing runs.
     case pr
@@ -18,22 +18,25 @@ nonisolated enum TodoSection: String, CaseIterable, Sendable {
     case other
     /// A task with no activity for 48 hours and nothing running.
     case shelved
-    /// Closed, accepted or deployed more than 24 hours ago.
+    /// Explicitly completed or accepted, regardless of age.
     case done
+    /// Cancelled, with its reason; never mixed into Done (#5732).
+    case cancelled
 
-    /// Other open, Shelved and Done start folded.
-    var startsFolded: Bool { self == .other || self == .shelved || self == .done }
+    /// Other open, Shelved, Done and Cancelled start folded.
+    var startsFolded: Bool { self == .other || self == .shelved || self == .done || self == .cancelled }
 
     /// The section's header (the web's `todos.section_*`).
     var title: String {
         switch self {
-        case .waiting: StateName.needsYou.text
+        case .waiting: String(localized: "Waiting for You [To-do Sections]")
         case .working: StateName.working.text
-        case .justDone: String(localized: "Just Finished")
+        case .justDone: String(localized: "Delivered · Awaiting Review [To-do Sections]")
         case .pr: String(localized: "PR to Merge")
         case .other: String(localized: "Other Open")
         case .shelved: String(localized: "Shelved")
         case .done: String(localized: "Done [To-do Sections]")
+        case .cancelled: String(localized: "Canceled")
         }
     }
 }
@@ -45,7 +48,7 @@ nonisolated enum TodoBucket: String, Sendable {
 
 /// Which SOP rule placed a to-do; the section follows from it.
 nonisolated enum TodoTriageRule: String, Sendable {
-    case failedStart = "failed_start", superseded, agentAsks = "agent_asks", ownerDecides = "owner_decides", agentRunning = "agent_running"
+    case failedStart = "failed_start", cancelled, superseded, agentAsks = "agent_asks", ownerDecides = "owner_decides", agentRunning = "agent_running"
     case closed, accepted, deployed, finishedUnseen = "finished_unseen", prOpen = "pr_open", stale, rest
 }
 
@@ -81,6 +84,8 @@ nonisolated struct TodoTriageResult: Sendable {
     var open: Int
     var shelved: Int
     var finished: Int
+    /// Cancelled to-dos, separate from completed (#5732).
+    var cancelled: Int
 
     func groups(_ section: TodoSection) -> [TodoTriageGroup] { sections[section] ?? [] }
     var isEmpty: Bool { sections.values.allSatisfy(\.isEmpty) }
@@ -89,13 +94,11 @@ nonisolated struct TodoTriageResult: Sendable {
 nonisolated enum TodoTriageLogic {
     /// No activity for this long, nothing of it running: shelved.
     static let shelveAfter: TimeInterval = 48 * 3600
-    /// Finished this recently: Just finished; earlier, Done.
-    static let justDone: TimeInterval = 24 * 3600
 
     /// How a to-do's linked agents stand, the way the web's `todoStatus` reads them: an open ask does not count here
     /// (rules 3 and 8 read it), unlike `TaskState(todo:agents:)`.
     enum AgentsStatus: Equatable, Sendable {
-        case failed, done, notStarted, needsYou, interrupted, usageLimit, unread, working, followUp
+        case failed, done, notStarted, needsYou, interrupted, usageLimit, unread, working, waiting, followUp
     }
 
     static func agentsStatus(_ todo: TodoItem, lookup: TodosLogic.SessionLookup?) -> AgentsStatus {
@@ -103,23 +106,27 @@ nonisolated enum TodoTriageLogic {
         if todo.doneAt != nil { return .done }
         let active = todo.activeAgents
         if active.isEmpty { return .notStarted }
-        var interrupted = false, limit = false, unread = false, working = false
+        var interrupted = false, limit = false, unread = false, working = false, waiting = false
         for a in active {
             if let e = a.startError, !e.isEmpty { continue } // a failed start counts as stopped
             let s = lookup?(a.machineID, a.sessionID)
             let st = s?.state ?? .offline
-            if st == .needsYou { return .needsYou }
+            if st == .needsYou || s?.status == .blocked || (s?.pendingInteractions ?? 0) > 0 { return .needsYou }
             let stopped = st == .unread || st == .idle
             let error = !(s?.turnError ?? "").isEmpty
             if error, s?.turnErrorKind == "usage_limit", stopped { limit = true }
             else if error, stopped { interrupted = true }
             else if st == .unread { unread = true }
             else if st == .working || s?.starting == true { working = true }
+            else if st != .needsYou, st != .unread, s?.work?.phase == "blocked", ["agent", "external", "transient"].contains(s?.work?.on ?? "") {
+                waiting = true
+            }
         }
         if interrupted { return .interrupted }
         if limit { return .usageLimit }
         if unread { return .unread }
         if working { return .working }
+        if waiting { return .waiting }
         return .followUp
     }
 
@@ -140,8 +147,11 @@ nonisolated enum TodoTriageLogic {
     static func openPR(_ todo: TodoItem) -> Bool {
         let d = todo.delivery?.state ?? ""
         if d == "pr" { return true }
-        return !(todo.prURL ?? "").isEmpty && (d.isEmpty || d == "none")
+        return !(todo.prURL ?? "").isEmpty && (d.isEmpty || d == "none") && stageIndex(todo.stage) < stageIndex("merge")
     }
+
+    private static let stages = ["plan", "develop", "review", "merge", "deploy", "verify"]
+    private static func stageIndex(_ stage: String?) -> Int { max(stages.firstIndex(of: stage ?? "") ?? 0, 0) }
 
     /// A task (an agent was linked, or a conversation handed it out) with no due date ahead. The user's own to-dos
     /// without agents — reminders, errands — never shelve themselves.
@@ -159,14 +169,14 @@ nonisolated enum TodoTriageLogic {
     /// A to-do's section by the SOP's decision table, first match wins:
     ///
     ///  1. failedStart    the task's agent never started                    → Waiting on you, Done after 48 h;
-    ///     superseded     … and a related to-do (its row) really finished   → Just finished (24 h), then Done (#3713)
+    ///     superseded     … and a related to-do (its row) really finished   → Done (#3713)
     ///  2. agentAsks      an agent asks (question, approval) or was cut off → Waiting on you
     ///  3. ownerDecides   review says needs_user, or a decision / "cannot" ask → Waiting on you
     ///  4. agentRunning   an agent is working or starting                   → Working
-    ///  5. closed         done_at set                                       → Just finished (24 h), then Done
-    ///  6. accepted       the latest review accepted it (even reopened)     → Just finished (24 h), then Done
-    ///  7. deployed       its delivery is live                              → Just finished (24 h), then Done
-    ///  8. finishedUnseen an agent finished unseen, awaits review, or a done ask → Just finished
+    ///  5. closed         done_at set                                       → Done
+    ///  6. accepted       the latest review accepted it (even reopened)     → Done
+    ///  7. deployed       its delivery is live, not accepted                → Delivered · awaiting review
+    ///  8. finishedUnseen an agent finished unseen, awaits review, or a done ask → Delivered · awaiting review
     ///  9. prOpen         its PR is open, nothing running                   → PR to merge (however old)
     /// 10. stale          a task with no activity for 48 h                  → Shelved
     /// 11. rest           anything else                                     → Other open
@@ -174,26 +184,25 @@ nonisolated enum TodoTriageLogic {
                        superseded: Bool = false, calendar: Calendar = .current) -> TodoTriage {
         let last = lastActivity(todo, lookup: lookup, restoredAt: restoredAt)
         let status = agentsStatus(todo, lookup: lookup)
-        let recent = { (at: Date) in now.timeIntervalSince(at) < justDone }
         let ask = openAsk(todo)
         let review = todo.reviewState
         func at(_ s: TodoSection, _ r: TodoTriageRule) -> TodoTriage { TodoTriage(section: s, rule: r, last: last) }
 
+        if todo.isCancelled { return at(.cancelled, .cancelled) }
         if status == .failed {
             // the same piece of work finished in a related to-do (`supersededFailedStarts`): history, nothing to retry
-            if superseded { return at(recent(todo.doneAt ?? last) ? .justDone : .done, .superseded) }
+            if superseded { return at(.done, .superseded) }
             return at(now.timeIntervalSince(last) < shelveAfter ? .waiting : .done, .failedStart)
         }
         if status == .needsYou || status == .interrupted { return at(.waiting, .agentAsks) }
         if todo.doneAt == nil, review == .needsUser || ask?.outcome == "decide" || ask?.outcome == "cannot" {
             return at(.waiting, .ownerDecides)
         }
-        if status == .working { return at(.working, .agentRunning) }
-        if let done = todo.doneAt { return at(recent(done) ? .justDone : .done, .closed) }
-        if todo.acceptanceStands {
-            return at(recent(todo.supervision?.latestReview?.at ?? .distantPast) ? .justDone : .done, .accepted)
-        }
-        if todo.delivery?.state == "live" { return at(recent(todo.delivery?.at ?? last) ? .justDone : .done, .deployed) }
+        if status == .working || status == .waiting { return at(.working, .agentRunning) }
+        if todo.doneAt != nil { return at(.done, .closed) }
+        if todo.acceptanceStands { return at(.done, .accepted) }
+        // Live is delivery, not acceptance: an unreviewed live task stays open and awaiting review, however old (#5732).
+        if todo.delivery?.state == "live" { return at(.justDone, .finishedUnseen) }
         if status == .unread || review == .pendingReview || (ask != nil && (ask?.outcome ?? "").isEmpty) || ask?.outcome == "done" {
             return at(.justDone, .finishedUnseen)
         }
@@ -202,8 +211,8 @@ nonisolated enum TodoTriageLogic {
         return at(.other, .rest)
     }
 
-    /// Whether a to-do counts toward the header's open count: not closed, not accepted or deployed, not shelved. A
-    /// finished turn nobody looked at yet (Just finished, still open) counts: only a review or the user closes a to-do.
+    /// Whether a to-do counts toward the header's open count: not closed, accepted or shelved. A delivered turn nobody
+    /// accepted still counts, however old: only a review or the user closes a to-do.
     static func countsAsOpen(_ todo: TodoItem, _ t: TodoTriage) -> Bool {
         // a failed start has done_at too (the hub ends it), yet while it waits on the owner it is theirs to retry: open
         if t.rule == .failedStart { return t.section == .waiting }
@@ -283,7 +292,7 @@ nonisolated enum TodoTriageLogic {
         }
         var owner: [String: String] = [:]
         for td in list {
-            let side = td.doneAt != nil ? "c" : "o"
+            let side = td.isCancelled ? "x" : td.doneAt != nil ? "c" : "o"
             for k in relatedKeys(td) {
                 let key = side + "|" + k
                 if let other = owner[key] {
@@ -304,7 +313,7 @@ nonisolated enum TodoTriageLogic {
     /// badge and the assistant's entries alike (the web's `supersededFailedStarts`).
     static func supersededFailedStarts(_ todos: [TodoItem]) -> Set<String> {
         let root = relatedRoots(todos)
-        let finished = Set(todos.filter { $0.doneAt != nil && !$0.failedToStart }.compactMap { root[$0.id] })
+        let finished = Set(todos.filter { $0.doneAt != nil && !$0.failedToStart && !$0.isCancelled }.compactMap { root[$0.id] })
         return Set(todos.filter { $0.failedToStart && root[$0.id].map(finished.contains) == true }.map(\.id))
     }
 
@@ -340,6 +349,7 @@ nonisolated enum TodoTriageLogic {
             if countsAsOpen(td, t) { open += 1 }
         }
         let shelved = counts[.shelved] ?? 0
+        let cancelled = counts[.cancelled] ?? 0
         let order = Dictionary(uniqueKeysWithValues: TodoSection.allCases.enumerated().map { ($0.element, $0.offset) })
         var sections = Dictionary(uniqueKeysWithValues: TodoSection.allCases.map { ($0, [TodoTriageGroup]()) })
         for r in rootOrder {
@@ -362,7 +372,7 @@ nonisolated enum TodoTriageLogic {
             sections[s]!.sort { a, b in a.last != b.last ? a.last > b.last : a.key < b.key }
         }
         return TodoTriageResult(sections: sections, todoCounts: counts, open: open, shelved: shelved,
-                                finished: list.count - open - shelved)
+                                finished: list.count - open - shelved - cancelled, cancelled: cancelled)
     }
 }
 

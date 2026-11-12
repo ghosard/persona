@@ -66,14 +66,14 @@ describe("triage (docs/assistant/todo-status-sop.md, decision table)", () => {
     expect(at(todo("t", { updated_at: hoursAgo(400), agents: [agent("run")] }))).toMatchObject({ section: "working", rule: "agent_running" });
   });
 
-  it("a closed to-do is Just finished for a day, then Done", () => {
-    expect(at(todo("t", { done_at: hoursAgo(3) })).section).toBe("just_done");
+  it("a closed to-do is Done immediately, however recent", () => {
+    expect(at(todo("t", { done_at: hoursAgo(3) })).section).toBe("done");
     expect(at(todo("t", { done_at: hoursAgo(30), updated_at: hoursAgo(30) })).section).toBe("done");
   });
 
-  it("an accepted task reopened by more work is finished, not Follow up", () => {
+  it("an accepted task reopened by more work is Done, not awaiting review", () => {
     const td = todo("t", { agents: [agent("idle")], reopened_at: hoursAgo(4), supervision: acceptedReopened() });
-    expect(at(td)).toMatchObject({ section: "just_done", rule: "accepted" });
+    expect(at(td)).toMatchObject({ section: "done", rule: "accepted" });
     expect(todoStatusLabel(td, todoStatus(td, lookup))).toBe("已验收");
     expect(reviewBadge(td)?.tone).toBe("green");
   });
@@ -82,8 +82,13 @@ describe("triage (docs/assistant/todo-status-sop.md, decision table)", () => {
     expect(at(todo("t", { agents: [agent("run")], supervision: acceptedReopened() })).section).toBe("working");
   });
 
-  it("a deployed delivery is finished", () => {
-    expect(at(todo("t", { delivery: { state: "live", at: hoursAgo(2) } })).rule).toBe("deployed");
+  it("a live delivery stays awaiting review until accepted", () => {
+    const recent = todo("t", { delivery: { state: "live", at: hoursAgo(2) } });
+    expect(at(recent)).toMatchObject({ section: "just_done", rule: "finished_unseen" });
+    expect(todoBucket(recent, lookup, NOW)).toBe("open");
+    const old = todo("t", { updated_at: hoursAgo(300), delivery: { state: "live", at: hoursAgo(300) } });
+    expect(at(old)).toMatchObject({ section: "just_done", rule: "finished_unseen" });
+    expect(todoBucket(old, lookup, NOW)).toBe("open");
   });
 
   it("a finished turn nobody saw is Just finished", () => {
@@ -164,7 +169,7 @@ describe("triageTodos", () => {
   it("never merges a closed to-do into an open one's row", () => {
     const r = triageTodos([todo("a", { title: "Same title" }), todo("b", { title: "Same title", done_at: hoursAgo(1) })], lookup, NOW);
     expect(r.sections.other).toHaveLength(1);
-    expect(r.sections.just_done).toHaveLength(1);
+    expect(r.sections.done).toHaveLength(1);
   });
 
   it("counts a failed start waiting on the owner as open, though the hub set done_at", () => {
@@ -182,14 +187,14 @@ describe("triageTodos", () => {
     // another failed start is not finished work: those two still wait on the owner
     expect([...supersededFailedStarts(list)]).toEqual(["f"]);
     const r = triageTodos(list, lookup, NOW);
-    expect(r.sections.just_done.map((g) => g.members.map((m) => m.id))).toEqual([["d", "f"]]);
+    expect(r.sections.done.map((g) => g.members.map((m) => m.id))).toEqual([["d", "f"]]);
     expect(r.sections.waiting.map((g) => g.members.map((m) => m.id))).toEqual([["g", "h"]]);
     expect(r.open).toBe(2);
-    expect(r.sections.just_done[0].triage.get("f")?.rule).toBe("superseded");
+    expect(r.sections.done[0].triage.get("f")?.rule).toBe("superseded");
     // every count of open work reads it the same way (Progress, #3331)
     expect(todoBucket(failed, lookup, NOW, 0, true)).toBe("closed");
     expect(todoBucket(failed, lookup, NOW)).toBe("open");
-    // like the work it went with: Just finished for 24 hours, then Done
+    // like the work it went with: completed history, never awaiting review (#5732)
     expect(triage(failed, lookup, NOW + 30 * 3600_000, 0, true).section).toBe("done");
   });
 

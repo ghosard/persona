@@ -37,6 +37,8 @@ import {
   heldDelivery,
   TODO_TONE_CLASS,
   isAutoDone,
+  isCancelled,
+  cancellationReason,
   isOverdue,
   todoDueDay,
   todoDueText,
@@ -196,6 +198,7 @@ export function TodosView({
   const [deleting, setDeleting] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [showDone, setShowDone] = useState(false);
+  const [showCancelled, setShowCancelled] = useState(false);
   const [showReleased, setShowReleased] = useState(false);
   // The calendar (#2029): the address says which mode and day; a click on its empty axis opens New To-Do due there.
   const calendarOn = view === "calendar";
@@ -224,23 +227,27 @@ export function TodosView({
     if (selectedId) setActiveId(selectedId);
   }, [selectedId]);
 
-  // Separate uncompleted and completed todos
-  const { uncompleted, completed } = useMemo(() => {
+  // Separate open, completed and cancelled to-dos; cancellation never counts as completion (#5732).
+  const { uncompleted, completed, cancelled } = useMemo(() => {
     const un: Todo[] = [];
     const comp: Todo[] = [];
+    const cancel: Todo[] = [];
     for (const t of todos) {
-      if (t.done_at) comp.push(t);
+      if (isCancelled(t)) cancel.push(t);
+      else if (t.done_at) comp.push(t);
       else un.push(t);
     }
     return {
       uncompleted: sortTodos(un, lookup),
       completed: sortTodos(comp, lookup),
+      cancelled: sortTodos(cancel, lookup),
     };
   }, [todos, lookup]);
   // A sessions push builds a new lookup: what it leaves in the same order stays the same list (and the same groups,
   // the same row views below), so the rows and sections it did not touch skip their render.
   const steadyUncompleted = useSteady(uncompleted, sameList);
   const steadyCompleted = useSteady(completed, sameList);
+  const steadyCancelled = useSteady(cancelled, sameList);
   const views = useSteady(useMemo(() => todoRowViews(todos, lookup, interactions), [todos, lookup, interactions]), steadyViews);
 
   // The filter by due date and the order inside each section (#3740): this browser's, in both groupings
@@ -278,6 +285,7 @@ export function TodosView({
 
   const filteredUncompleted = useMemo(() => steadyUncompleted.filter(filterTodo), [steadyUncompleted, search, listFilter, tick]);
   const filteredCompleted = useMemo(() => steadyCompleted.filter(filterTodo), [steadyCompleted, search, listFilter, tick]);
+  const filteredCancelled = useMemo(() => steadyCancelled.filter(filterTodo), [steadyCancelled, search, listFilter, tick]);
   // open todos under the knowledge-base project they are in (#2581), else the one their agents work in (#2526)
   const kbProjects = useTodoProjects();
   const projectName = useMemo(() => projectNames(kbProjects), [kbProjects]);
@@ -357,9 +365,9 @@ export function TodosView({
       return triaged.sections.other[0]?.lead;
     }
     // by 常驻: the first row shown (a to-do outside every section is not on the list), else the first completed one
-    if (grouping === "direction") return directionSections[0]?.todos[0] ?? filteredCompleted[0];
-    return filteredUncompleted[0] ?? filteredCompleted[0];
-  }, [activeId, todos, filteredUncompleted, filteredCompleted, byStatus, triaged, grouping, directionSections]);
+    if (grouping === "direction") return directionSections[0]?.todos[0] ?? filteredCompleted[0] ?? filteredCancelled[0];
+    return filteredUncompleted[0] ?? filteredCompleted[0] ?? filteredCancelled[0];
+  }, [activeId, todos, filteredUncompleted, filteredCompleted, filteredCancelled, byStatus, triaged, grouping, directionSections]);
 
   // The to-do open beside the calendar: the address's, while it is there.
   const selectedTodo = calendarOn && selectedId ? todos.find((td) => td.id === selectedId) : undefined;
@@ -505,9 +513,9 @@ export function TodosView({
               <span className="text-[12px] whitespace-nowrap text-ink-3 max-sm:hidden">
                 {byStatus
                   ? listFilter === "all"
-                    ? t("todos.summary_triage", { open: triageAll.open, shelved: triageAll.shelved, done: triageAll.finished })
-                    : t("todos.summary_filtered", { filter: filterLabel(listFilter), open: triageAll.open, shelved: triageAll.shelved, done: triageAll.finished })
-                  : t("todos.summary", { open: uncompleted.length, done: completed.length })}
+                    ? t("todos.summary_triage", { open: triageAll.open, shelved: triageAll.shelved, done: triageAll.finished, cancelled: triageAll.cancelled })
+                    : t("todos.summary_filtered", { filter: filterLabel(listFilter), open: triageAll.open, shelved: triageAll.shelved, done: triageAll.finished, cancelled: triageAll.cancelled })
+                  : t("todos.summary", { open: uncompleted.length, done: completed.length, cancelled: cancelled.length })}
               </span>
             )}
           </div>
@@ -584,6 +592,7 @@ export function TodosView({
                 onToggleReleased={() => setShowReleased((v) => !v)}
                 onToggleDone={() => toggleDone(selectedTodo)}
                 onOpenHandover={() => openHandover()}
+                onOpenTodo={openFromList}
                 onDeleteClick={() => askDelete(selectedTodo.id)}
               />
             </div>
@@ -639,7 +648,7 @@ export function TodosView({
               >
                 {todosError}
               </Empty>
-            ) : (filteredUncompleted.length === 0 || (grouping === "direction" && directionSections.length === 0 && directionUnlisted === 0)) && filteredCompleted.length === 0 ? (
+            ) : (filteredUncompleted.length === 0 || (grouping === "direction" && directionSections.length === 0 && directionUnlisted === 0)) && filteredCompleted.length === 0 && filteredCancelled.length === 0 ? (
               offline && todos.length === 0 ? (
                 <OfflineState offline={offline} ring="ring-surface" className="py-14" />
               ) : search.trim() ? (
@@ -765,6 +774,26 @@ export function TodosView({
                     )}
                   </div>
                 )}
+                {/* Cancelled Fold: its own outcome and reason, never inside Completed (#5732) */}
+                {filteredCancelled.length > 0 && (
+                  <div className="mt-2 border-t border-line/60 pt-2" data-testid="todos-cancelled-fold">
+                    <button
+                      type="button"
+                      onClick={() => setShowCancelled((v) => !v)}
+                      className="flex h-8 w-full items-center justify-between rounded-control px-2.5 text-[12px] text-ink-3 transition-colors hover:bg-hover hover:text-ink-2"
+                    >
+                      <span>{t("todos.cancelled_section", { count: filteredCancelled.length })}</span>
+                      <Icon name="chevron" size={12} className={cx("transition-transform duration-200", showCancelled ? "rotate-180" : "")} />
+                    </button>
+                    {showCancelled && (
+                      <div className="flex flex-col gap-1 pt-1">
+                        {filteredCancelled.map((todo) => (
+                          <TodoListItem key={todo.id} todo={todo} view={views.get(todo.id)!} selected={activeTodo?.id === todo.id} onSelect={openFromList} onToggleDone={toggleDone} onMenu={openRowMenu} />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
               )
             )}
@@ -798,6 +827,7 @@ export function TodosView({
               onToggleReleased={() => setShowReleased((v) => !v)}
               onToggleDone={() => toggleDone(activeTodo)}
               onOpenHandover={() => openHandover()}
+              onOpenTodo={openFromList}
               onDeleteClick={() => askDelete(activeTodo.id)}
             />
           ) : (
@@ -1092,11 +1122,12 @@ const SECTION_TONE: Record<TriageSection, string> = {
   other: "text-ink-2",
   shelved: "text-ink-3",
   done: "text-ink-3",
+  cancelled: "text-ink-3",
 };
 
 /** A section's title: the two that are agent states take the state names (lib/state-labels.ts). */
 function sectionTitle(section: TriageSection): string {
-  if (section === "waiting") return stateName("needs_you");
+  if (section === "waiting") return t("todos.section_waiting");
   if (section === "working") return stateName("working");
   return t(`todos.section_${section}`);
 }
@@ -1424,7 +1455,10 @@ const TodoListItem = memo(function TodoListItem({
         {/* Why its agent did not start, while it waits on the owner (DESIGN_SYSTEM 5.6: what failed, in red) */}
         {failedOpen && <div className="mt-1 truncate text-[11.5px] text-red" data-testid="todo-start-failed">{t("todos.start_failed", { error: todo.start_error ?? "" })}</div>}
 
-        {/* Why the hub closed it */}
+        {/* Why it was cancelled, or why the legacy hub auto-closed it */}
+        {isCancelled(todo) && cancellationReason(todo) && (
+          <div className="mt-1 truncate text-[11.5px] text-ink-3" data-testid="todo-cancelled-reason">{cancellationReason(todo)}</div>
+        )}
         {isAutoDone(todo) && todo.done_reason && (
           <div className="mt-1 truncate text-[11.5px] text-ink-3">{todo.done_reason}</div>
         )}
@@ -1733,6 +1767,7 @@ function TodoDetail({
   onToggleReleased,
   onToggleDone,
   onOpenHandover,
+  onOpenTodo,
   onDeleteClick,
 }: {
   todo: Todo;
@@ -1746,6 +1781,7 @@ function TodoDetail({
   onToggleReleased: () => void;
   onToggleDone: () => void;
   onOpenHandover: () => void;
+  onOpenTodo: (id: string) => void;
   onDeleteClick: () => void;
 }) {
   const title = useTodoField({
@@ -1869,6 +1905,11 @@ function TodoDetail({
         <span className="text-ink-3">·</span>
         <span>{t("todos.created_at", { time: clock(todo.created_at) })}</span>
       </div>
+      {isCancelled(todo) && cancellationReason(todo) && (
+        <p className="mt-2 text-[12.5px] leading-[1.6] text-ink-3" data-testid="todo-detail-cancelled-reason">
+          {t("todos.cancelled_reason", { reason: cancellationReason(todo) })}
+        </p>
+      )}
       {isAutoDone(todo) && (
         <p className="mt-2 text-[12.5px] leading-[1.6] text-ink-3">
           {todo.done_reason ? t("todos.auto_done_reason", { reason: todo.done_reason }) : t("todos.auto_done")}
@@ -1890,7 +1931,7 @@ function TodoDetail({
       <ReviewChecklist todo={todo} />
       {todo.brief && (
         <Suspense fallback={null}>
-          <TaskBriefHistory todo={todo} />
+          <TaskBriefHistory todo={todo} onOpenTodo={onOpenTodo} />
         </Suspense>
       )}
       <LatestReport todo={todo} />

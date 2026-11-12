@@ -6,6 +6,9 @@ struct TodoDetailView: View {
     @Environment(\.tabIsActive) private var inFront
     @Environment(\.dismiss) private var dismiss
     var todoID: String
+    /// In an existing value-based stack, lineage buttons append here. Sheet presentations leave it nil and use their
+    /// own NavigationLink destination below.
+    var openDetail: ((TodoDetailRoute) -> Void)? = nil
 
     @State private var store = TodoStore.shared
     @State private var text = TodoEditorText()
@@ -43,6 +46,7 @@ struct TodoDetailView: View {
         }
         .detailTitle(currentTodo?.title ?? String(localized: "To-Do Details"))
         .navigationBarTitleDisplayMode(.inline)
+        .navigationDestination(for: TodoDetailRoute.self) { route in TodoDetailView(todoID: route.id, openDetail: openDetail) }
         .pageToolbar {
             ToolbarItem(placement: .primaryAction) {
                 Menu {
@@ -187,6 +191,12 @@ struct TodoDetailView: View {
                         }
                     }
 
+                    if let reason = todo.cancellationReason, !reason.isEmpty {
+                        Text(String(localized: "Cancelled: \(reason) [Todo Detail]"))
+                            .font(Theme.Font.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     if todo.autoDone {
                         // The hub closed it (docs/assistant/todos.md「Automatic completion」): say why, and how to undo it.
                         Text(todo.autoDoneReason.map { String(localized: "The agent stopped and the work looked finished, so it was marked done: \($0). If it isn't, tap “Reopen”.") }
@@ -204,6 +214,10 @@ struct TodoDetailView: View {
             if todo.supervision != nil {
                 // A task the main conversation supervises (#3124): its criteria as the latest review found them.
                 Section { ReviewChecklist(todo: todo).padding(.vertical, Theme.Space.xs) }
+            }
+
+            if let lineage = todo.lineage, !lineage.isEmpty {
+                TodoLineageSection(steps: lineage, openDetail: openDetail)
             }
 
             stageSection(todo)
@@ -497,6 +511,80 @@ struct TodoDetailView: View {
         .padding(.horizontal, Theme.Space.page)
         .padding(.vertical, Theme.Space.s)
         .background(Theme.pageBackground)
+    }
+}
+
+/// The two directions of a task hand-off; each non-current card opens in the same detail stack (#5732).
+private struct TodoLineageSection: View {
+    let steps: [TodoLineageStep]
+    let openDetail: ((TodoDetailRoute) -> Void)?
+
+    var body: some View {
+        Section(String(localized: "Who Worked on It [Todo Detail]")) {
+            ForEach(steps) { step in
+                VStack(alignment: .leading, spacing: Theme.Space.xs) {
+                    HStack(spacing: Theme.Space.s) {
+                        if step.current == true {
+                            Text(step.title ?? step.todoID)
+                                .font(Theme.Font.bodyStrong)
+                            Text(String(localized: "Current Task [Todo Detail]"))
+                                .font(Theme.Font.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            routeLink(TodoDetailRoute(id: step.todoID), identifier: "todo.lineage.open.\(step.todoID)") {
+                                Text(step.title ?? step.todoID)
+                                    .font(Theme.Font.body)
+                                    .foregroundStyle(Theme.accent)
+                                    .lineLimit(1)
+                            }
+                        }
+                    }
+                    if let why = step.why, !why.isEmpty {
+                        Text(why)
+                            .font(Theme.Font.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let id = step.continues {
+                        lineageLink(id: id, continues: true)
+                    }
+                    if let id = step.supersededBy {
+                        lineageLink(id: id, continues: false)
+                    }
+                }
+                .padding(.vertical, Theme.Space.xs)
+            }
+        }
+    }
+
+    private func title(_ id: String) -> String {
+        steps.first(where: { $0.todoID == id })?.title ?? id
+    }
+
+    @ViewBuilder private func lineageLink(id: String, continues: Bool) -> some View {
+        let name = title(id)
+        routeLink(TodoDetailRoute(id: id), identifier: "todo.lineage.\(continues ? "continues" : "superseded").\(id)") {
+            Text(continues
+                 ? String(localized: "Continues From \(name) [Todo Detail]")
+                 : String(localized: "Continued By \(name) [Todo Detail]"))
+                .font(Theme.Font.captionStrong)
+                .foregroundStyle(Theme.accent)
+                .lineLimit(1)
+        }
+    }
+
+    /// A button uses the path injected by the containing stack. NavigationLink is only for a sheet's own stack.
+    @ViewBuilder private func routeLink<Label: View>(_ route: TodoDetailRoute, identifier: String,
+                                                     @ViewBuilder label: () -> Label) -> some View {
+        if let openDetail {
+            Button(action: { openDetail(route) }, label: label)
+                .buttonStyle(.plain)
+                .accessibilityIdentifier(identifier)
+        } else {
+            NavigationLink(value: route, label: label)
+                .buttonStyle(.plain)
+                .accessibilityIdentifier(identifier)
+        }
     }
 }
 

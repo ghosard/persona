@@ -7,6 +7,9 @@ public struct TodoDetailRoute: Hashable, Sendable, Identifiable {
 }
 
 struct TodosView: View {
+    /// Programmatic opens share the stack's value-based path with rows and lineage links; a view-based destination
+    /// would sit above values pushed from its detail (docs/lessons/ios.md).
+    var openDetail: (TodoDetailRoute) -> Void
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var store = TodoStore.shared
@@ -23,8 +26,6 @@ struct TodosView: View {
     /// tick moves to-dos across the 24 h / 48 h lines while the page stays open.
     @State private var restored = TodoRestores.load()
     @State private var clock = Date.now
-    /// A to-do opened from the calendar (and, in DEBUG screenshots, `-openTodoTitled <text>`: the first whose title has it).
-    @State private var pushed: TodoDetailRoute?
     /// List or calendar, and the calendar's day / week / month (#2029): each device keeps its own.
     @StoredValue("todos.view") private var viewMode = TodosViewMode.list
     @StoredValue("todos.calendar.mode") private var calendarMode = TodoCalendarMode.day
@@ -57,7 +58,7 @@ struct TodosView: View {
             TodosModeBar(view: $viewMode, mode: $calendarMode) { listControls }
             if viewMode == .calendar {
                 TodoCalendarView(todos: store.scopedTodos, mode: $calendarMode, anchor: $calendarAnchor,
-                                 open: { pushed = TodoDetailRoute(id: $0) }, showList: { viewMode = .list })
+                                 open: { openDetail(TodoDetailRoute(id: $0)) }, showList: { viewMode = .list })
             } else {
                 list
             }
@@ -94,18 +95,16 @@ struct TodosView: View {
             if UserDefaults.standard.bool(forKey: "showDoneTodos") { unfolded = [.other, .shelved, .done] }
             if let match = UserDefaults.standard.string(forKey: "openTodoTitled"),
                let todo = store.scopedTodos.first(where: { $0.title.contains(match) }) {
-                pushed = TodoDetailRoute(id: todo.id)
+                openDetail(TodoDetailRoute(id: todo.id))
             }
             #endif
         }
-        // Another assistant is current: the list is its to-dos now, and one opened or being written is the one before's.
+        // Another assistant is current: the list is its to-dos now, and one being written is the one before's.
         .onChange(of: model.assistantSwitches) {
-            pushed = nil
             showCreate = false
             quickAdd = nil
             openedGroups = []
         }
-        .navigationDestination(item: $pushed) { r in TodoDetailView(todoID: r.id) }
     }
 
     private var list: some View {
@@ -432,7 +431,7 @@ private extension TodoSection {
         case .working: StatusPalette.working
         case .justDone: StatusPalette.unread
         case .pr: StatusTone(dot: Theme.accent, text: Theme.accent)
-        case .other, .shelved, .done: StatusPalette.idle
+        case .other, .shelved, .done, .cancelled: StatusPalette.idle
         }
     }
 }
