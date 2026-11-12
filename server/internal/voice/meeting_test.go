@@ -27,8 +27,9 @@ import (
 func roomHub(t *testing.T) *fakeHub {
 	hub := newFakeHub(t)
 	// Listed as the manager lists a room (assistant/fleet_sessions.go decorateInventory): a guest of the assistant's in
-	// its own directory, so no assistant row, with its origin, recording and title.
+	// its own directory, an assistant row since #6077, with its origin, recording and title.
 	hub.sessions["room1"] = &fakeSession{id: "room1", status: "idle", look: func(s *proto.Session) {
+		s.Assistant = true
 		s.Origin, s.OriginRef, s.Title, s.Agent, s.Cwd = originMeeting, "rec1", "1112 | Design review", "claude", "/home/me/.persona/guest-meeting/rec1"
 	}}
 	meeting := &proto.MessageSource{Kind: proto.SourceMeeting, Title: "Design review"}

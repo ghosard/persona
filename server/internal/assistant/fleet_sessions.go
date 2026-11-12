@@ -322,15 +322,6 @@ func (s *Service) decorateInventory(machine string, list []proto.Session, comple
 				list[i].Queued = append(slices.Clip(list[i].Queued), q...) // the node's slice is shared: never write into it
 				list[i].QueuedRelayed = uint16(min(len(q), math.MaxUint16))
 			}
-		} else if v := shown[list[i].SessionID]; v.Origin == OriginMeeting {
-			// A meeting's room runs in its own directory (guest-meeting/<recording id>), not the assistant's, so it is no
-			// assistant row; its origin and title are still said, so that the apps and the voice extension know it for a
-			// room, which takes only the iPhone's meeting calls (docs/assistant/meeting-minutes.md "Phase 4: realtime voice
-			// in the meeting"), and the call's snapshot names the meeting rather than its first message.
-			list[i].Origin, list[i].OriginRef = v.Origin, v.OriginRef
-			if v.Title != "" && !list[i].TitleManual && list[i].TitleSource.String() != "manual" { // a rename is the user's own
-				list[i].Title = v.Title
-			}
 		}
 		list[i].SeenAt = seen[list[i].SessionID]
 		localizeSession(lang, &list[i]) // the node's Chinese activity line… (fleet_text.go)

@@ -683,10 +683,10 @@ func TestMeetingRoomDeleted(t *testing.T) {
 	waitFor(t, "the deleted recording's room deleted", func() bool { return !r.s.isRoom(other) })
 }
 
-// A room's row in the lists the apps and the extensions read (GET /api/v1/sessions) is no assistant row (it runs in
-// guest-meeting/<recording id>, not the assistant's directory), yet it says its origin meeting, its recording and its
-// title, so that the voice extension refuses an ordinary call bound to it (meeting_room) and the apps leave its voice
-// button out. Another row the book has an origin for is not an assistant's conversation and says none.
+// A room's row in the lists the apps and the extensions read (GET /api/v1/sessions) is the assistant's (its
+// guest-meeting/<recording id> directory counts as the assistant's since #6077) and says its origin meeting, its
+// recording and its title, so that the voice extension refuses an ordinary call bound to it (meeting_room) and the apps
+// leave its voice button out. Another row the book has an origin for is not an assistant's conversation and says none.
 func TestMeetingRoomRowSaysItsOrigin(t *testing.T) {
 	ft := newFleetTest(t)
 	machine, _ := ft.s.fleetMachine("mac")
@@ -694,28 +694,21 @@ func TestMeetingRoomRowSaysItsOrigin(t *testing.T) {
 	room := proto.Session{SessionID: sid, Agent: "claude", Status: proto.StatusIdle, Title: "The meeting is starting.",
 		Cwd: path.Join(path.Dir(machine.assistantCwd()), "guest-meeting", meetingRec)}
 	agent := proto.Session{SessionID: "agent", Agent: "claude", Cwd: "/home/u/src", PaneID: "p1", Status: proto.StatusIdle, Title: "Fix the build"}
-	renamed := proto.Session{SessionID: meetingSessionID(meetingOther, partRoom), Agent: "claude", Status: proto.StatusIdle,
-		Title: "My own name", TitleManual: true, Cwd: path.Join(path.Dir(machine.assistantCwd()), "guest-meeting", meetingOther)}
-	ft.d.setSessions("mac", []proto.Session{room, agent, renamed})
+	ft.d.setSessions("mac", []proto.Session{room, agent})
 	ctx := context.Background()
 	started := time.Date(2026, 11, 13, 14, 0, 0, 0, time.UTC)
 	ft.s.originSet(ctx, "mac", sid, OriginMeeting, meetingRec, "")
 	ft.s.titleFixed("mac", sid, started, titleMeeting, "Design review")
 	ft.s.originSet(ctx, "mac", "agent", OriginTask, "task1", "")
-	ft.s.originSet(ctx, "mac", renamed.SessionID, OriginMeeting, meetingOther, "")
-	ft.s.titleFixed("mac", renamed.SessionID, started, titleMeeting, "Other meeting")
 	rows := map[string]proto.Session{}
 	for _, sess := range ft.s.decoratedUnarchived("mac") {
 		rows[sess.SessionID] = sess
 	}
-	if r := rows[sid]; r.Assistant || r.Origin != OriginMeeting || r.OriginRef != meetingRec || !strings.Contains(r.Title, "Design review") {
+	if r := rows[sid]; !r.Assistant || r.Origin != OriginMeeting || r.OriginRef != meetingRec || !strings.Contains(r.Title, "Design review") {
 		t.Fatalf("the room's row: assistant %v, origin %q %q, title %q", r.Assistant, r.Origin, r.OriginRef, r.Title)
 	}
 	if r := rows["agent"]; r.Origin != "" || r.OriginRef != "" || r.Title != "Fix the build" {
 		t.Fatalf("an agent's row: origin %q %q, title %q", r.Origin, r.OriginRef, r.Title)
-	}
-	if r := rows[renamed.SessionID]; r.Origin != OriginMeeting || r.Title != "My own name" {
-		t.Fatalf("a renamed room: origin %q, title %q", r.Origin, r.Title)
 	}
 	if r, ok := ft.s.decoratedSession("mac", sid); !ok || r.Origin != OriginMeeting || r.OriginRef != meetingRec {
 		t.Fatalf("the room's row alone: %v %q %q", ok, r.Origin, r.OriginRef)
