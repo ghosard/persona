@@ -588,6 +588,130 @@ final class MessageLiftUITests: XCTestCase {
         XCTAssertTrue(Self.splitMiddle.contains(copied), "the word selected is the pressed one, in 「\(Self.splitMiddle)」: \(copied)")
     }
 
+    // MARK: The edit menu stays off the selection (#6005)
+
+    /// What `-showLiftLines` says is selected (`LiftUITextView.publishPicked`), in the window: its lines, its handles,
+    /// and the part of the text view that shows.
+    private struct Picked {
+        var lines: [CGRect] = []
+        var handles: [CGRect] = []
+        var shown: CGRect = .null
+    }
+
+    @MainActor private func picked() -> Picked {
+        let e = app.descendants(matching: .any)["lift-lines"].firstMatch
+        guard e.waitForExistence(timeout: 3) else {
+            XCTFail("no lift-lines (-showLiftLines)")
+            return Picked()
+        }
+        var last = "", now = ""
+        for _ in 0..<10 {
+            now = (e.value as? String ?? "").components(separatedBy: "|picked=").dropFirst().first ?? ""
+            if !now.isEmpty, now == last { break }
+            last = now
+            usleep(300_000)
+        }
+        func rects(_ s: Substring) -> [CGRect] {
+            s.split(separator: ";").compactMap { r in
+                let n = r.split(separator: ",").compactMap { Double($0) }
+                return n.count == 4 ? CGRect(x: n[0], y: n[1], width: n[2], height: n[3]) : nil
+            }
+        }
+        var p = Picked()
+        for field in now.split(separator: "/") {
+            guard let eq = field.firstIndex(of: "=") else { continue }
+            let value = field[field.index(after: eq)...]
+            switch field[..<eq] {
+            case "lines": p.lines = rects(value)
+            case "handles": p.handles = rects(value)
+            case "shown": p.shown = rects(value).first ?? .null
+            default: break
+            }
+        }
+        return p
+    }
+
+    /// The edit menu's frame: its own element where the system has one, else around its items (and their padding).
+    @MainActor private func menuFrame() -> CGRect {
+        let menu = app.menus.firstMatch
+        if menu.exists, !menu.frame.isEmpty { return menu.frame }
+        let frames = ["引用", "拷贝", "查询", "翻译", "共享…", "全选", "搜索网页"].map(menuItem)
+            .filter { $0.exists }.map(\.frame).filter { !$0.isEmpty && app.frame.intersects($0) }
+        guard let first = frames.first else { return .null }
+        return frames.dropFirst().reduce(first) { $0.union($1) }.insetBy(dx: -4, dy: -4)
+    }
+
+    /// The edit menu is up, over none of the selected words that show and neither handle; a shot of it, `name`.
+    @MainActor private func checkTheMenuIsClear(_ name: String) {
+        XCTAssertTrue(menuItem("拷贝").waitForExistence(timeout: 5), "\(name): no edit menu:\n\(app.debugDescription)")
+        sleep(1)
+        shot("menu-" + name)
+        let menu = menuFrame(), p = picked()
+        XCTAssertFalse(menu.isNull, "\(name): no menu frame:\n\(app.debugDescription)")
+        XCTAssertFalse(p.lines.isEmpty, "\(name): nothing selected (-showLiftLines)")
+        XCTAssertFalse(p.handles.isEmpty, "\(name): no selection handles found")
+        for line in p.lines {
+            let seen = line.intersection(p.shown)
+            guard !seen.isNull, !seen.isEmpty else { continue }
+            XCTAssertFalse(menu.intersects(seen.insetBy(dx: 0.5, dy: 0.5)), "\(name): the menu \(menu) is over the selected words \(seen)")
+        }
+        for h in p.handles {
+            XCTAssertFalse(menu.intersects(h), "\(name): the menu \(menu) is over a selection handle \(h)")
+        }
+    }
+
+    /// A long press at a point of the lifted copy (in the window): selects the word there in place.
+    @MainActor private func pressInLift(_ at: CGPoint) {
+        app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: at.x, dy: at.y)).press(forDuration: 0.8)
+        XCTAssertTrue(app.textViews["lift-text"].waitForExistence(timeout: 5), "a long press in the lifted copy did not select in place")
+    }
+
+    /// The edit menu over a selection in a lifted answer covers neither the selected words nor either handle (#6005):
+    /// a word on the long answer's last line, near the bottom of the screen (the menu above it); a word of its first
+    /// line, scrolled to near the top (the menu below it, clear of the end handle); that selection's end handle dragged
+    /// down a few lines (the text view's own menu); a short answer all selected with Select Text. At the default and
+    /// the largest text size.
+    @MainActor func testTheEditMenuStaysOffTheSelectionAndItsHandles() throws {
+        inEachScheme {
+            for big in [false, true] {
+                let size = big ? ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"] : []
+                let tag = big ? "-xxxl" : ""
+                app = XCUIApplication()
+                launch(long, ["-showLiftLines", "YES", "-openChatsFresh", "YES"] + size)
+                liftTheLongAnswerAtItsEnd()
+                let end = lifted.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "有问题的话告诉我")).firstMatch
+                XCTAssertTrue(shows(end), "the pressed line shows")
+                pressInLift(CGPoint(x: end.frame.minX + 12, y: end.frame.maxY - 12))
+                checkTheMenuIsClear("bottom" + tag)
+                menuItem("拷贝").tap()
+                XCTAssertTrue(app.textViews["lift-text"].waitForNonExistence(timeout: 3), "拷贝 put the answer back")
+
+                liftTheLongAnswerAtItsEnd()
+                scrollToTheTop()
+                XCTAssertTrue(shows(firstLine), "the lifted answer scrolls to its first line")
+                pressInLift(CGPoint(x: firstLine.frame.minX + 12, y: firstLine.frame.minY + 12))
+                checkTheMenuIsClear("top" + tag)
+                let p = picked()
+                if let handle = p.handles.max(by: { ($0.midY, $0.midX) < ($1.midY, $1.midX) }) {
+                    let line = p.lines.first?.height ?? 24
+                    let origin = app.coordinate(withNormalizedOffset: .zero)
+                    origin.withOffset(CGVector(dx: handle.midX, dy: handle.maxY - 4))
+                        .press(forDuration: 0.4, thenDragTo: origin.withOffset(CGVector(dx: app.frame.width * 0.6, dy: handle.maxY + line * 3)))
+                    sleep(1)
+                    XCTAssertGreaterThan(picked().lines.count, 1, "the end handle dragged down selects several lines")
+                    checkTheMenuIsClear("lines" + tag)
+                }
+
+                app = XCUIApplication()
+                launch(short, ["-showLiftLines", "YES", "-openChatsFresh", "YES"] + size)
+                liftAt("注册页的按钮没有换行")
+                app.buttons["选择文本"].firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.85)).tap()
+                XCTAssertTrue(app.textViews["lift-text"].waitForExistence(timeout: 5), "选择文本 did not select the words in place")
+                checkTheMenuIsClear("short-all" + tag)
+            }
+        }
+    }
+
     /// A short answer, as before: lifted where it is, all of it; Copy copies it.
     @MainActor func testALongPressOnAShortAnswerLiftsAndCopiesIt() throws {
         inEachScheme {
