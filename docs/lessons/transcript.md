@@ -268,3 +268,19 @@ A view that fetches once per id cannot recover when the store puts the same id b
   same split again. Leave `cwd` as recorded: it is what the session's own record says.
 - A test that makes a repository under `t.TempDir()` and compares paths needs the physical temporary directory
   (`physicalTempDir`): macOS's is behind a link, so the test passes on Linux and fails on a Mac.
+
+## A per-row lookup slower than its cache's life is never cached (2026-11-12)
+
+- Each row of the session list whose transcript path was found more than 30 seconds ago is looked up again
+  (`findTranscriptPath`), and each lookup globbed `<projects>/*/<id>.jsonl`: Go's `filepath.Glob` reads and sorts every
+  project directory to match one name, so a lookup costs a read of the whole tree (66 ms for 2,600 directories and
+  37,000 transcripts). A chat bridge kept 567 parked compatible-CLI threads listed: one rebuild took 41 s, longer than
+  the 30 s the found paths were trusted for, so every rebuild found them all expired again and the cache never hit. Five
+  rebuild sources overlapped, and the node used four cores, half of it in the kernel reading directories.
+- Below the threshold (rows × lookup < trust window) the cost is near zero; above it it jumps to the full price. Check
+  per-row work against the list's real size, not a dozen test rows.
+- A rollout (Codex, the compatible CLI) has no copy in Claude's projects directories: once found it stays the thread's
+  file while it exists, and a live rollout agent is looked up in its rollouts only (`isClaudeTranscript`,
+  `rolloutAgent`). Claude rows still look again every half minute; a shared read per list pass would bound them, but it
+  must not hide a newer copy that appears in another config directory meanwhile
+  (`TestAssistantResumeKeepsARunningProcessProfile`).

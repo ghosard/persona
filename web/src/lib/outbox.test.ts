@@ -59,6 +59,19 @@ describe("which bubbles stay", () => {
     expect(settle(list, [{ id: "u1", text: "你好", images: [] }], 1000).map((e) => e.id)).toEqual(["a", "b", "w"]); // words alone: not it
   });
 
+  it("a send that ended in doubt goes once its words reach the transcript; a refusal does not", () => {
+    const doubt = entry({ id: "d", state: "failed", inDoubt: true, at: 1_000_000 });
+    const refused = entry({ id: "r", state: "failed", at: 1_000_000 });
+    const copy = { id: "u1", text: "你好", images: [], ts: new Date(1_030_000).toISOString() };
+    expect(settle([doubt], [copy], 1_040_000).map((e) => e.id)).toEqual([]);
+    expect(settle([refused], [copy], 1_040_000).map((e) => e.id)).toEqual(["r"]);
+    // an older message with the same words is not its copy, also within the clocks' usual slack
+    const older = { id: "u0", text: "你好", images: [], ts: new Date(1_000_000 - 600_000).toISOString() };
+    expect(settle([doubt], [older], 1_040_000).map((e) => e.id)).toEqual(["d"]);
+    const justBefore = { id: "u2", text: "你好", images: [], ts: new Date(1_000_000 - 60_000).toISOString() };
+    expect(settle([doubt], [justBefore], 1_040_000).map((e) => e.id)).toEqual(["d"]);
+  });
+
   it("takes one bubble per copy, never an older message's copy, and a copy only once", () => {
     const list = [entry({ id: "a", at: 1_000_000 }), entry({ id: "b", at: 1_001_000 })];
     const older = { id: "u0", text: "你好", images: [], ts: new Date(1_000_000 - 600_000).toISOString() };
@@ -366,6 +379,15 @@ describe("messages kept across a reload", () => {
     reload();
     restoreOutbox("m", "s");
     expect(outbox()["m/s"]).toMatchObject([{ id: "a6", error: reason, newId: true }]);
+  });
+
+  it("a message whose send timed out but went in shows as sent, not as failed to send again", () => {
+    // The hub answered 502 delivered "unknown" after its 90 s (the node wrote the message after it stopped waiting).
+    keepFailed("m", "s", { id: "a7", text: "前端页面上也有多次显示发送失败", images: [], at: Date.now() }, new ApiError(502, "x", { delivered: "unknown" }));
+    expect(outbox()["m/s"]).toMatchObject([{ id: "a7", state: "failed", inDoubt: true }]);
+    // Its line reaches the transcript a little later, with no tie from the hub.
+    settleOutbox("m", "s", [{ id: "line-9", text: "前端页面上也有多次显示发送失败", images: [], ts: new Date(Date.now() + 30_000).toISOString() }]);
+    expect(outbox()["m/s"]).toBeUndefined();
   });
 
   it("a message still sending when the page closed comes back too", () => {

@@ -29,7 +29,7 @@ import { buildTaskIndex, loopCadence, loopNext, stableSubagents, STOP_LOOP_MESSA
 import { runStep, sameStep, turnDone, type RunStep } from "../../lib/run-step";
 import { stabilizeLines, stableValue } from "../../lib/stable-lines";
 import { planProgress, workLineStyle } from "../../lib/work-groups";
-import { echoed, taggedSeen } from "../../lib/echo";
+import { echoed, taggedSeen, type Seen } from "../../lib/echo";
 import { acceptOutgoing, forgetOutgoing, inSendOrder, keepFailed, keepOutgoing, noteWritten, outboxKey, placeFailed, restoreOutbox, retryOutbox, SENT_GRACE_MS, settleOutbox } from "../../lib/outbox";
 import { apiOp } from "../../lib/ops";
 import { conversationKey, pickedLauncher, pickedModel } from "../../lib/assistant-chat";
@@ -550,12 +550,16 @@ export function ChatView({ mid, sid, assistant, starting: launching, onToggleSid
   // a sent message stays as a "sending" bubble until the transcript has it (lib/echo.ts): an item the hub tied to it
   // (any kind, a notice too), or else a latest user message with its words; one that answered one answers no other
   const claimed = useRef(new Set<string>());
+  // the latest user messages the transcript showed: a send whose answer comes back in doubt after its copy arrived
+  // settles against them at once (failed below), not at the transcript's next change, which may be long in coming
+  const seenUsers = useRef<Seen[]>([]);
   useEffect(() => {
     // what a reload interrupted, once the hub's first page can tell what went in (a cached page cannot),
     // and not before this chat is known: a restored bubble's Retry posts without passing through deliver
     if (tr.firstRead && !refusedNoRow) restoreOutbox(mid, sid, pending.map((p) => p.id));
     const users = [...segs.slice(-4).flatMap((seg) => (seg.user && !seg.user.injected ? [seg.user] : [])), ...taggedSeen(tr.items)];
     users.forEach((user) => acknowledgeLaunch(mid, sid, user));
+    seenUsers.current = users;
     settleOutbox(mid, sid, users);
     if (!pending.length) return;
     const shown = echoed(pending, users, (p) => ({ id: p.id, text: p.msg.text, images: p.msg.images, at: p.at }), claimed.current);
@@ -1005,6 +1009,8 @@ export function ChatView({ mid, sid, assistant, starting: launching, onToggleSid
    *  conversation's setup (a card above the composer with what to do). */
   function failed(e: unknown, out: Outgoing, p: Pending) {
     keepFailed(mid, sid, { id: p.id, text: out.text, images: out.images, at: p.at, launcher: assistant ? pickedLauncher(conversationKey(mid, sid)) : undefined, model: assistant ? pickedModel(conversationKey(mid, sid)) : undefined }, e);
+    // in doubt, its copy may be in the chat already (the hub answered after the node wrote it): then it went
+    if (e instanceof ApiError && e.body.delivered === "unknown") settleOutbox(mid, sid, seenUsers.current);
     if (e instanceof ApiError && e.code === "input_draft") {
       setDraftRefusal({ id: p.id, draft: String(e.body.draft ?? ""), clearable: typeof e.body.clearable === "string" ? e.body.clearable : undefined });
     } else if (assistant && !(e instanceof ApiError && (e.code === "dialog_open" || e.body.delivered === "unknown"))) {
