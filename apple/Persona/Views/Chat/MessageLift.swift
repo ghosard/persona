@@ -500,8 +500,8 @@ enum LiftTrace {
 
     static func note(_ s: @autoclosure () -> String) {
         guard on else { return }
-        let ms = String(format: "%7.1f", (CACurrentMediaTime() - t0) * 1000)
-        log.notice("lift-trace \(ms, privacy: .public) \(s(), privacy: .public)")
+        let ms = String(format: "%7.1f", (CACurrentMediaTime() - t0) * 1000), what = s()
+        log.notice("lift-trace \(ms, privacy: .public) \(what, privacy: .public)")
     }
 
     static func time<T>(_ what: @autoclosure () -> String, _ f: () -> T) -> T {
