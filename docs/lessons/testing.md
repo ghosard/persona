@@ -302,6 +302,21 @@ Pitfalls, odd behavior, and the tradeoffs made at the time (originally in `CLAUD
   rendering snapshots and sending requests to the dead address. Taps appear ineffective, with toast "Can't reach the hub; that action did not take effect". Before demo-mode tests,
   run `xcrun simctl keychain <udid> reset`. Same for Mac acceptance copies (keychain keyed by bundle ID): use `-openWelcome YES -demo.on YES` and clear this copy's pairing first.
 
+## Rendering a split view in a unit test (2026-11-13, #6061)
+
+- A `List` or a `NavigationSplitView` needs a real window: `ImageRenderer` draws neither. Host the page in a
+  `UIHostingController` inside a `UIWindow` of the scene, set `traitOverrides.horizontalSizeClass = .regular` for the split,
+  and draw with `drawHierarchy(in:afterScreenUpdates: true)`.
+- The scene sizes a shown window to its screen: a 951 × 669 window on an upright phone simulator came back 669 × 951 (a larger
+  one in both directions kept its size). Make the window large and put the page in a child view of the size wanted.
+- SwiftUI builds no accessibility elements without an assistive technology, so a walk of the tree in a unit test finds no
+  identifiers. `RuntimeCLI.enableAccessibilityTree()` turns on what XCUITest turns on; walk it as `RuntimeCLI.allElements`
+  does (a depth limit, the identifier read by key as a fallback).
+- The unit test host is the app itself, with the app's defaults and caches: set the defaults a check depends on
+  (`agents.list.closed`) and put them back; check things that hold whatever the cached data is.
+- `UIDevice.current.userInterfaceIdiom` is the simulator's: a layout that branches on it takes an environment override
+  (`splitIdiom`) so one simulator can draw the iPad's and the phone's.
+
 ## Privacy checks and dependency download sources
 
 - 2026-11-04, #1775: even unmodified Mermaid assets can coincidentally match short private terms inside public event names. Download the pinned package from npm first, verify registry SHA-512 integrity, then byte-compare repository assets with the archive. Never log private terms or matched text.

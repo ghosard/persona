@@ -493,6 +493,18 @@ Select Text copies only a segment (`SelectTextTests`: Agent reply with code bloc
 `TEST_RUNNER_PERSONA_MOCK_HUB=http://127.0.0.1:<port>`, style `TEST_RUNNER_PERSONA_UI_STYLE=beautiful`, `TEST_RUNNER_PERSONA_SHOTS=<directory>` (named by simulator appearance).
 Run a new UI test against unfixed code first to confirm it fails, then apply the fix.
 
+One sidebar (iPad and the open iPhone Duo, #4206; faster since #6061): the UI tests `OneSidebarTests`, `DuoOpenChromeTests` and
+`IPadSidebarTests` launch with `-showStillUI YES` (DEBUG only, `apple/Persona/Debug/StillUI.swift`: UIKit's and SwiftUI's animations
+off, so a slide or a fold lands at once) and wait on conditions (`PersonaUITests/SidebarWaits.swift`: hittable, gone, a frame that
+stopped moving), never a fixed `sleep()`. A test that checks a motion itself launches without the switch (`SplitDividerTests`: the
+column following the finger). The column's look is a unit test, `PersonaTests/OneSidebarLookTests`: the real Agents page under the
+one sidebar in a `UIWindow` of the iPad's, the Duo upright's and the Duo on its side's size (`splitIdiom` lays the column out for
+each on any simulator), light and dark; it checks the Duo's 320 pt width, one column color top to bottom, one button at the top
+leading corner and nothing cut, by pixels and accessibility frames, not reference images. `TEST_RUNNER_PERSONA_LOOK_SHOTS=<dir>`
+keeps each render with its element list. Which picks slide the column away upright is `OneSidebarPick.slidesAway`
+(`PersonaTests/OneSidebarPickTests`); the UI test keeps one filter and one direction end to end. The Duo's posture is set in
+Xcode's Device Hub, not by `TEST_RUNNER_PERSONA_ORIENTATION` alone.
+
 Agents tab navigation (#5641): `AgentsTabNavigationTests/testDispatchBackThenAgentsAlwaysShowsList` opens a dispatched
 Agent from Assistant, goes Back, and selects Agents five times; it checks the list's visible control, navigation root
 and absence of an Agent detail. `testNativeTabReselectionAndSwitchBackShowList` runs on iPad's native tabs and checks

@@ -13,6 +13,7 @@ import XCTest
 /// (PERSONA_MOCK_HUB).
 /// TEST_RUNNER_PERSONA_HOLD=<seconds> holds each state, named in an activity `duo-shot <name>`, for
 /// `simctl io --display=3 screenshot`; XCUITest's own screenshot captures the dark outer screen.
+/// Launched with `-showStillUI YES` (no animations) and waiting on conditions, never a fixed sleep (#6061).
 final class DuoOpenChromeTests: XCTestCase {
     private var app: XCUIApplication!
 
@@ -25,7 +26,8 @@ final class DuoOpenChromeTests: XCTestCase {
         XCUIDevice.shared.orientation = ProcessInfo.processInfo.environment["PERSONA_ORIENTATION"] == "landscape" ? .landscapeLeft : .portrait
         app = XCUIApplication()
         let pair = "persona://pair?url=" + hub.addingPercentEncoding(withAllowedCharacters: .alphanumerics)! + "&token=mock"
-        app.launchArguments = ["-pairURL", pair, "-tab", "assistant", "-app.tab", "assistant", "-agents.list.closed", "NO"]
+        app.launchArguments = ["-pairURL", pair, "-tab", "assistant", "-app.tab", "assistant", "-agents.list.closed", "NO",
+                               "-showStillUI", "YES"]
         app.launchPinned()
         guard app.windows.firstMatch.frame.width > 600 else { throw XCTSkip("regular width only (iPhone Duo open)") }
         // Upright the column lies over the page and may start away (#4852).
@@ -34,8 +36,7 @@ final class DuoOpenChromeTests: XCTestCase {
         _ = main.waitForExistence(timeout: 20)
         if !main.isHittable, back.waitForExistence(timeout: 5), back.isHittable {
             back.tap()
-            XCTAssertTrue(main.waitForExistence(timeout: 5), "the column did not come out")
-            sleep(1) // the slide
+            XCTAssertTrue(main.waitForHittable(timeout: 5), "the column did not come out")
         }
     }
 
@@ -45,8 +46,7 @@ final class DuoOpenChromeTests: XCTestCase {
         if main.exists && main.isHittable { return }
         if back.waitForExistence(timeout: 5), back.isHittable {
             back.tap()
-            XCTAssertTrue(main.waitForExistence(timeout: 5), "the column did not come out")
-            sleep(1) // the slide
+            XCTAssertTrue(main.waitForHittable(timeout: 5), "the column did not come out")
         }
     }
 
@@ -111,7 +111,7 @@ final class DuoOpenChromeTests: XCTestCase {
         XCTAssertTrue(field.waitForExistence(timeout: 5), "Search opened no field:\n\(app.debugDescription)")
         let keyboard = app.keyboards.firstMatch
         XCTAssertTrue(keyboard.waitForExistence(timeout: 5), "the field did not take the keyboard")
-        sleep(1)
+        XCTAssertTrue(keyboard.waitForSteadyFrame() && field.waitForSteadyFrame(), "the keyboard or the field kept moving")
         let window = app.windows.firstMatch.frame
         XCTAssertGreaterThan(field.frame.minY, window.midY - 100, "the field is not at the foot: \(field.frame) in \(window)")
         XCTAssertLessThanOrEqual(field.frame.maxY, keyboard.frame.minY + 1, "the field is under the keyboard: \(field.frame), \(keyboard.frame)")
@@ -148,15 +148,15 @@ final class DuoOpenChromeTests: XCTestCase {
         // The menu away through its harmless copy: a tap beside it does not land on the open Duo upright, where
         // synthetic input off an element misses.
         app.buttons["拷贝会话 ID"].firstMatch.tap()
-        sleep(1) // the menu's closing (its items' names are also other buttons' on the page: no wait on them)
+        // The menu closed: what was under it takes taps again (its items' names are also other buttons' on the page,
+        // so no wait on them).
+        let collapse = element("assistant-sidebar-collapse"), face = self.face
+        XCTAssertTrue(Waits.until { collapse.isHittable || face.isHittable }, "the menu did not close:\n\(app.debugDescription)")
         // Upright the column lies over the face (#4852): folded first, if that tap did not send it away already.
-        let collapse = element("assistant-sidebar-collapse")
         if upright, collapse.exists, collapse.isHittable {
             collapse.tap()
-            sleep(1) // the slide, before the face takes a tap
         }
-        let face = self.face
-        XCTAssertTrue(face.waitForExistence(timeout: 5) && face.isHittable, "no face at the top:\n\(app.debugDescription)")
+        XCTAssertTrue(face.waitForHittable(timeout: 5), "no face at the top:\n\(app.debugDescription)")
         face.tap()
         for label in ["详细信息", "拷贝目录", "拷贝信息"] {
             XCTAssertTrue(app.buttons[label].firstMatch.waitForExistence(timeout: 5), "no \(label) in the face's menu:\n\(app.debugDescription)")

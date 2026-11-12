@@ -16,6 +16,9 @@ import XCTest
 /// Device Hub, on its side (TEST_RUNNER_PERSONA_ORIENTATION=landscape) or upright; the closed Duo and other iPhones skip.
 /// Taps and long presses only (upright, synthetic drags miss on the open Duo). TEST_RUNNER_PERSONA_HOLD=<seconds> holds
 /// each state, named in an activity `one-sidebar <name>`, for `simctl io screenshot` (`--display=3` on the Duo).
+/// Launched with `-showStillUI YES` (no animations) and waiting on conditions, never a fixed sleep (#6061). The column's
+/// look (its width, its one color, one button at the corner, nothing cut) is `PersonaTests/OneSidebarLookTests`; which
+/// picks slide it away upright is `PersonaTests/OneSidebarPickTests`, with one end-to-end check here.
 final class OneSidebarTests: XCTestCase {
     private var app: XCUIApplication!
     private var hub = ""
@@ -30,7 +33,7 @@ final class OneSidebarTests: XCTestCase {
         app = XCUIApplication()
         // `agents.list.width` 0: the column at its default width, not one SplitDividerTests left dragged.
         app.launchArguments = ["-pairURL", pair, "-tab", "assistant", "-app.tab", "assistant", "-dev.openChat", "",
-                               "-dev.grouping", "repo", "-agents.list.closed", "NO", "-agents.list.width", "0"]
+                               "-dev.grouping", "repo", "-agents.list.closed", "NO", "-agents.list.width", "0", "-showStillUI", "YES"]
     }
 
     override func tearDown() {
@@ -72,20 +75,14 @@ final class OneSidebarTests: XCTestCase {
                       file: file, line: line)
     }
 
-    /// The column still out a moment after a tap that changes no page.
+    /// The column still out once things settle after a tap that changes no page.
     @MainActor private func assertColumnStays(_ after: String, file: StaticString = #filePath, line: UInt = #line) {
-        sleep(1) // longer than the slide (`Theme.Motion.layout`)
-        XCTAssertTrue(element("sidebar-main").isHittable, "the column went after \(after)", file: file, line: line)
+        let main = element("sidebar-main")
+        _ = main.waitForSteadyFrame(timeout: 3)
+        XCTAssertTrue(main.isHittable, "the column went after \(after)", file: file, line: line)
     }
 
     @MainActor private func element(_ id: String) -> XCUIElement { app.descendants(matching: .any)[id].firstMatch }
-
-    /// The column's width: its list, the collection view at the window's leading edge (as SplitDividerTests reads it).
-    @MainActor private func columnWidth() -> CGFloat {
-        let window = app.windows.firstMatch.frame
-        let list = app.collectionViews.allElementsBoundByIndex.first { $0.frame.minX < window.minX + 40 && $0.frame.width < window.width * 0.7 }
-        return list?.frame.width ?? 0
-    }
 
     /// The buttons in the window's top leading corner that fold the column or bring it back, the page's own or the
     /// system's, that can be tapped there.
@@ -98,12 +95,21 @@ final class OneSidebarTests: XCTestCase {
             .filter { $0.isHittable && $0.frame.minX >= window.minX - 1 && $0.frame.midX < window.midX && $0.frame.midY < window.minY + 200 }
     }
 
-    /// One button for the column at the top corner, a moment after the column moved.
+    /// One button for the column at the top corner, once the column has moved.
     @MainActor private func assertOneColumnButton(_ state: String, file: StaticString = #filePath, line: UInt = #line) {
-        sleep(1) // longer than the slide (`Theme.Motion.layout`)
+        _ = Waits.until(3) { columnButtons().count == 1 }
         let found = columnButtons()
         XCTAssertEqual(found.count, 1, "\(state): not one button for the column at the top corner: "
                        + "\(found.map { "\($0.identifier) “\($0.label)” \($0.frame)" })\n\(app.debugDescription)", file: file, line: line)
+    }
+
+    /// The posture this run asks for, known before a launch (the Duo's own is set in Device Hub to match): a test for
+    /// the other posture skips without launching the app, which is most of a test's time (#6061). The checks after the
+    /// launch (`duoUpright`) stay, for a run whose Duo is not in the posture it asks for.
+    private enum Asked { case pad, duoUpright, duoOnItsSide }
+    private var asked: Asked {
+        if UIDevice.current.userInterfaceIdiom == .pad { return .pad }
+        return ProcessInfo.processInfo.environment["PERSONA_ORIENTATION"] == "landscape" ? .duoOnItsSide : .duoUpright
     }
 
     /// The open Duo held on its side: the system's bars down the side.
@@ -151,13 +157,7 @@ final class OneSidebarTests: XCTestCase {
         XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier == %@ AND label CONTAINS %@", "sidebar-pinned", "等你")).firstMatch.exists,
                       "no direction shows its work")
         XCTAssertLessThan(main.frame.maxX, window.midX + 100, "the column is not on the left")
-        // As wide as ChatGPT's on the open Duo, 320 pt in both postures (`Theme.Size.sidebarPhone`); the iPad's is wider.
-        let width = columnWidth()
-        if duoUpright || duoOnItsSide {
-            XCTAssertEqual(width, 320, accuracy: 4, "the open Duo's column is not 320 pt wide")
-        } else {
-            XCTAssertGreaterThanOrEqual(width, 320, "the iPad's column is narrower than the Duo's")
-        }
+        // Its width (320 pt on the open Duo) and its one color: `PersonaTests/OneSidebarLookTests`.
         // Beside the page on the iPad and the open Duo on its side, the fold and the page's top on one line (2026-11-11,
         // the owner). Upright on the open Duo the column is over the page instead (#4852): the page keeps its full width.
         let pageNew = element("assistant-new")
@@ -282,6 +282,7 @@ final class OneSidebarTests: XCTestCase {
     /// An agent opened from the list shows beside the column with its row selected and Main Chat not; Main Chat closes it
     /// and is the selected row again.
     @MainActor func testAnOpenedAgentIsSelectedAndPersonaClosesIt() throws {
+        guard asked != .duoUpright else { throw XCTSkip("the column beside the page only (iPad, the open Duo on its side)") }
         // One of the current assistant's agents (the list shows only its computers since #5587: the mock hub's MacBook is
         // another assistant's), waiting for the user so it never folds into Idle Repositories with the time of day.
         try launch(["-openSession", "studio/a1f3c2d4-0000-4000-8000-000000000005"])
@@ -311,10 +312,11 @@ final class OneSidebarTests: XCTestCase {
         XCTAssertEqual(selected.count, 0, "an agent row stays selected:\n\(app.debugDescription)")
     }
 
-    /// Upright on the open Duo (#4852): the column lies over the page. Needs You / All and the grouping's segments only
-    /// change the list, so it stays; a pick that changes the page slides it away: a direction, a place, Main Chat, a
-    /// conversation from All Chats.
+    /// Upright on the open Duo (#4852): the column lies over the page. End to end, one of each kind: Needs You only
+    /// changes the list, so the column stays; a direction changes the page, so it slides away. Every pick's kind is
+    /// `OneSidebarPick` (`PersonaTests/OneSidebarPickTests`).
     @MainActor func testUprightAPickSlidesTheColumnAwayAndFiltersDoNot() throws {
+        guard asked == .duoUpright else { throw XCTSkip("the open Duo upright only (the column beside the page elsewhere)") }
         try launch()
         guard duoUpright else { throw XCTSkip("the open Duo upright only (the column beside the page elsewhere)") }
         let needsYou = element("agents.filter.needsYou"), all = element("agents.filter.all")
@@ -322,45 +324,11 @@ final class OneSidebarTests: XCTestCase {
         needsYou.tap()
         assertColumnStays("Needs You")
         all.tap()
-        assertColumnStays("All")
-        // The segments, or the grouping menu standing in for them in a column too narrow for the five.
-        let segments = element("agents.grouping.segments"), pill = element("agents.grouping")
-        for (segment, item) in [("机器", "按机器"), ("仓库", "按仓库")] {
-            if segments.exists {
-                segments.buttons[segment].firstMatch.tap()
-            } else {
-                XCTAssertTrue(pill.waitForExistence(timeout: 10), "no grouping segments or menu:\n\(app.debugDescription)")
-                pill.tap()
-                let pick = app.buttons[item].firstMatch
-                XCTAssertTrue(pick.waitForExistence(timeout: 10), "the grouping menu has no \(item):\n\(app.debugDescription)")
-                pick.tap()
-                XCTAssertTrue(pick.waitForNonExistence(timeout: 10), "the grouping menu stayed open")
-            }
-            assertColumnStays("a grouping")
-        }
         shot("upright-filters")
-
         // A direction: its conversation on the page, the column away.
         app.buttons.matching(identifier: "sidebar-pinned").firstMatch.tap()
         assertColumnAway("a direction")
         shot("upright-direction")
-        // A place.
-        bringColumnOut()
-        element("sidebar-inbox").tap()
-        assertColumnAway("the Inbox")
-        XCTAssertTrue(element("inbox.more").waitForExistence(timeout: 10), "the Inbox did not open:\n\(app.debugDescription)")
-        // Main Chat.
-        bringColumnOut()
-        element("sidebar-main").tap()
-        assertColumnAway("Main Chat")
-        // A conversation from All Chats: the list over the window, the conversation on the page, the column away.
-        bringColumnOut()
-        element("sidebar-all-chats").tap()
-        let row = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "auto-conversation")).firstMatch
-        XCTAssertTrue(row.waitForExistence(timeout: 10), "All Chats lists nothing:\n\(app.debugDescription)")
-        row.tap()
-        XCTAssertTrue(row.waitForNonExistence(timeout: 5), "a conversation did not close All Chats")
-        assertColumnAway("a conversation from All Chats")
     }
 
     /// Upright on the open Duo: an agent picked in the column slides it away (#4852), and ‹ on that agent goes back to
@@ -368,6 +336,7 @@ final class OneSidebarTests: XCTestCase {
     @MainActor func testUprightBackFromAnAgentGoesToPersonasPage() throws {
         // The column at its default 320 pt: in the system's old one (about 200 pt upright) the Pinned rows took two lines,
         // the filter chips wrapped under the foot and the first Needs You card started below the first screen.
+        guard asked == .duoUpright else { throw XCTSkip("the open Duo upright only") }
         try launch()
         guard duoUpright else { throw XCTSkip("the open Duo upright only") }
         // The agents are under the first screen upright, and synthetic drags miss there: the first Needs You card's
@@ -456,25 +425,5 @@ final class OneSidebarTests: XCTestCase {
         } else {
             XCTAssertTrue(element("sidebar-main").waitForHittable(timeout: 5), "the column is not back")
         }
-    }
-}
-
-private extension XCUIElement {
-    /// Waits until it can be tapped where it is (on screen, nothing over it).
-    func waitForHittable(timeout: TimeInterval = 5) -> Bool {
-        XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == true AND isHittable == true"), object: self)],
-                       timeout: timeout) == .completed
-    }
-
-    /// Waits until it is gone or out of reach (slid off screen).
-    func waitForNotHittable(timeout: TimeInterval = 5) -> Bool {
-        XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false OR isHittable == false"), object: self)],
-                       timeout: timeout) == .completed
-    }
-
-    /// Waits for VoiceOver's selected trait (the row the detail column shows).
-    func waitForSelected(timeout: TimeInterval = 5) -> Bool {
-        XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "isSelected == true"), object: self)],
-                       timeout: timeout) == .completed
     }
 }
