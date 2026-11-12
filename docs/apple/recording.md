@@ -458,11 +458,17 @@ and its states are in [DESIGN_SYSTEM.md](../design/DESIGN_SYSTEM.md) "Meeting pa
 - **One capture** (`MeetingCallAudio`, the `VoiceAudio` of a meeting call): the recorder's one input tap, already at 16 kHz,
   feeds the segment writer and, through `RecordingCapture.listen` (`RecordingSegmentWriter.listener`, called on the tap's
   thread, with where each buffer's first sample lies on the timeline), `MeetingTalkTap`, which hands the call's uplink
-  PCM16 and keeps the newest buffer's level for the talk window. A buffer reaches the tap only once it is full (100 to
-  400 ms), so the span is placed by where its samples were captured, not when they arrive: the press and the release are
-  `RecordingCapture.listenPosition` (the timeline plus what the tap's next buffer has gathered so far,
-  `RecordingSegmentWriter.elapsedNow`), only the samples between them go up, and `talk off` waits for the buffer that
-  holds the release (at most 0.6 s, `MeetingCall.tailWait`). The uplink of a meeting call is gated
+  PCM16 and keeps the newest buffer's level for the talk window, with the room's over the last 5 seconds in pieces of
+  about 100 ms (`MeetingTalkTap.room(before:)`). A buffer reaches the tap only once it is full (4096 input frames: about
+  85 ms at 48 kHz, 512 ms at a Bluetooth headset's 8 kHz), so the span is placed by where its samples were captured, not
+  when they arrive: the press and the release are `RecordingCapture.listenPosition` (the timeline plus what the tap's
+  next buffer has gathered so far, `RecordingSegmentWriter.elapsedNow`), only the samples between them go up, and
+  `talk off` waits for the buffer that holds the release (at most 0.7 s, `MeetingCall.tailWait`). Each edge is placed to
+  its own safe side (`RecordingSegmentWriter.placed`): the press never before it happened, however long the buffer or
+  late its delivery (all of the time since the newest buffer's last sample, plus 50 ms for the converter's delay and a
+  buffer without a host time), so a stall only cuts the owner's first words; the release at most the longest buffer seen
+  since the tap was installed plus 100 ms of delivery past the timeline, so a stall never runs the span past the lift.
+  The uplink of a meeting call is gated
   (`VoiceUplink(gated: true)`): nothing is held before `ready`, nothing goes outside a span, and the `talk` frame goes
   under the uplink's lock (`VoiceUplink.talk`), so on the socket no buffer of a span is before its `talk on` or after its
   `talk off`. The voice plays through a player node on the recorder's own engine
@@ -493,15 +499,25 @@ and its states are in [DESIGN_SYSTEM.md](../design/DESIGN_SYSTEM.md) "Meeting pa
   `MeetingTalkButton`'s disappear, `MeetingCall.endHold`), at the Live Activity's Done, and after 60 seconds whatever the
   finger does (`MeetingCall.longestHold`). On the Lock Screen and in the island a tap opens a talk window
   (`TalkInMeetingIntent`, `MeetingCall.activityTap`), which ends on Done, on 2 seconds of silence after speech, after 20
-  seconds without speech or after 60 seconds (`MeetingTalkWindow`, ticking every 100 ms on the tap's level; a buffer at
-  -40 dBFS or louder is speech). The activity's buttons carry what they showed (`open`: Talk true, Done false), and
+  seconds without speech or after 60 seconds (`MeetingTalkWindow`, ticking every 100 ms on the tap's level). Speech is the
+  owner's, not the room's: the microphone hears everyone, and a room talking at a normal level would otherwise keep a
+  window open for its 60 seconds, all of it going to the voice service. So as the window opens it takes the room's level
+  from what the tap heard in the 5 seconds before (`MeetingTalkWindow.Room`; the 25th percentile of its 100 ms pieces,
+  so the owner's own words just before the tap hardly raise it), and a buffer is speech only 15 dB above that
+  (`aboveRoom`: the owner speaks into the phone, others are further away) and never below -40 dBFS. With less than
+  2 seconds of the room heard (the recording just started or continued), -40 dBFS alone, as before. The activity's
+  buttons carry what they showed (`open`: Talk true, Done false), and
   `MeetingCallRule.activityTap` acts only on a tap that matches what is open: Talk opens a window when no span is, Done
   ends any open span (a window, or a hold the page lost), and a Done tapped just after the window closed on its own
   opens nothing. VoiceOver on the page opens a window too (`pageWindow`). A span opening stops what Persona is saying (the
   call's voice, a spoken answer). With the call live, the span is `talk on`, its audio, `talk off`; the call's answer comes
-  as captions and its voice, and in the room's thread as the room's turn. A Lock Screen window before the owner was told
-  what Talk sends (`MeetingTalkPrivacy`, below) goes without the call (`MeetingCallRule.toCall`): those surfaces don't
-  show the Wording. A span the call loses midway (its socket dropped, the call ended) goes on without it
+  as captions and its voice, and in the room's thread as the room's turn. No span goes to the call before the owner was
+  told what Talk sends (`MeetingCallRule.toCall`, `MeetingTalkPrivacy`, below): one held or opened on the page goes only
+  once the Wording was seen with an earlier span or is on screen under Talk as it opens, and one from the Lock Screen or
+  the island (which never show it) only once seen; any other is asked without the call, its audio staying on the phone
+  (a meeting started from Siri, the Action button or the Control, whose page showed no Wording while the call was still
+  connecting, a VoiceOver window under a hint that wasn't spoken). A span the call loses midway (its socket dropped, the
+  call ended) goes on without it
   (`MeetingCall.Talk.lost`): the segment is cut there, and on release the whole span is asked. Without it (a listener, no
   `meeting`, the call connecting, reconnecting or down), the segment is cut at the span's start and end
   (`RecordingCapture.flushSegment`, also while paused, `cutsOnFlush`), the
@@ -517,9 +533,13 @@ and its states are in [DESIGN_SYSTEM.md](../design/DESIGN_SYSTEM.md) "Meeting pa
 - **The privacy texts**: where Talk sends its spans to the voice service, a room meeting taking part on a hub whose voice
   extension takes meeting calls (`MeetingCallRule.talkSendsAudio`), the line under Record and Talk's first-use note (and
   its spoken hint) say "Audio stays on this iPhone, except while you hold Talk: what is said then goes to the voice
-  service." (the contract's Wording). The note shows under the composer until a span went to the call while the page
-  showed it (the note under Talk as the finger went down, or Talk's spoken hint for VoiceOver's window;
-  `MeetingTalkPrivacy`, written once); a Lock Screen window never marks it. Everywhere else the texts are as before: a
+  service." (the contract's Wording). The note is a line of its own under the composer's caption, beside a word after a
+  span (hold longer, heard nothing) rather than replaced by it, until a span went to the call while it showed
+  (`MeetingTalkPrivacy`, written once). The line tells `MeetingCall` when it is on screen (`showingPrivacy`, from its
+  appearing and leaving), and it counts as shown for a span once it has been there a second (`MeetingTalkPrivacy.shown`):
+  drawn in the same instant as the finger went down (the call came up just then) is not shown. VoiceOver's window counts
+  the line on screen too, not Talk's spoken hint, which hints off, Voice Control, Switch Control and a keyboard never
+  speak; a Lock Screen window never marks it. Everywhere else the texts are as before: a
   listener's Talk stays on the phone. Record's Siri and Shortcuts description (`StartMeetingRecordingIntent`) says the
   Wording too, since it may start a meeting with Talk.
 - **No voice in a room opened as a chat**: a conversation whose origin is `meeting` offers no Voice Chat
@@ -527,6 +547,10 @@ and its states are in [DESIGN_SYSTEM.md](../design/DESIGN_SYSTEM.md) "Meeting pa
   an ordinary call bound to a room (`meeting_room`).
 - **What the simulator cannot verify**: voice processing (it doesn't run there), how much it changes the recording of a
   room's far voices, and the voice's echo through the loudspeaker; measure on a device before relying on the drop rule alone.
+  The same goes for the talk window's speech against the room (`MeetingTalkWindow.aboveRoom`, `roomPercentile`): voice
+  processing's gain control narrows the gap between the owner and the room, and a phone lying on the table as far from
+  the owner as from the others can't tell them apart by level at all (the window then ends after 20 seconds, or on its
+  limit if the room is loud enough to count). Measure a real room before changing them.
 - **Screenshots and tests**: the room samples (`-showMeetingSample room-listening|room-taking-part|room-whiteboard`) feed
   canned audio into the recorder's tap (`RecordingCapture.feedSample`: 3 s of a hum, 2 s of quiet), so Talk has something
   to send with no microphone; a span asked without the call gets made-up words as its transcript
@@ -534,8 +558,10 @@ and its states are in [DESIGN_SYSTEM.md](../design/DESIGN_SYSTEM.md) "Meeting pa
   call is up. The room samples show Talk's first-use note again. The mock hub with `MOCK_VOICE=1` serves meeting calls
   (`scripts/mock/voice_meeting_mock.py`: `meeting` in the features, the start checked against its room, audio counted
   inside and outside spans, an answer after each span in the room's thread; `GET /mock/voice_meeting`, `?meeting=off` an
-  extension from before phase 4). UI tests `MeetingTalkUITests` (a held Talk reaches the call inside its span only and its
-  answer the thread, the first-use note gone after it; Talk held and the Lock Screen's talk window, a Done after the
+  extension from before phase 4). `room-talk-held` holds Talk only once the page has shown the Wording for a moment, as a
+  finger under it would. UI tests `MeetingTalkUITests` (the first-use note on screen before the first hold, a held Talk
+  reaches the call inside its span only and its answer the thread, the note gone after it; Talk held and the Lock
+  Screen's talk window, a Done after the
   window closed opening no other span and no audio outside spans; a listener's Talk asked through `…/ask` as `spoken`; the
   start's privacy line with and without meeting calls; shots `talk-<appearance>-page|speaking|answered|held|lock-before|lock|listener-asked|start`).
   `MeetingConversationUITests` and `MeetingLiveViewUITests` switch the mock's meeting calls off, so their questions keep
@@ -543,12 +569,16 @@ and its states are in [DESIGN_SYSTEM.md](../design/DESIGN_SYSTEM.md) "Meeting pa
   a running call, asking for meeting calls stopping, where Talk is and where it sends audio, which ends start again, the
   start frame, the talk frames, a `ready` without `meeting`, only the span's audio going up and in order, a drop ending the
   span, the tap's PCM16 and level, only the samples inside the span with buffers straddling the press and the release, a
-  span the call loses asked without it, a paused recording still cutting the span's segment, reconnecting every 30 s, no
-  idle end, the talk window's four ends, the activity's tap doing what its button showed, a Lock Screen window going to
-  the call only once the owner was told, the span's words, a spoken ask on the wire, the voice's stretch leaving the
+  late 512 ms buffer sending nothing from before the press, a span the call loses asked without it, a paused recording
+  still cutting the span's segment, reconnecting every 30 s, no idle end, the talk window's four ends, a room talking
+  keeping no window open, a silent owner in a talking room ending at 20 s, what counts as speech, the tap hearing the
+  room, the activity's tap doing what its button showed, no span from any source going to the call before the Wording
+  showed or was seen, the Wording counting only once it was on screen, the span's words, a spoken ask on the wire, the
+  voice's stretch leaving the
   transcript, the Live Activity's Talk, the Lock Screen showing the call's answer, a call keeping its latest answer, no
   voice in a room opened as a chat); `MeetingSpeakerTests` (an answer's stretch half a second wider, a voice resampled
-  for the recorder's player).
+  for the recorder's player); `RecordingSegmentWriterTests` (a press never placed before it happened, a release held
+  back).
 
 ## All-day recording (Apple)
 

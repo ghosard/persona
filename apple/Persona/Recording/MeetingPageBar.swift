@@ -25,8 +25,9 @@ import SwiftUI
 /// **Talk** (#3862 phase 4) takes send's place while the field is empty and Persona can be asked (any role that attends):
 /// held while the owner speaks, to the meeting call when it is live, else asked without it. Not with Just Me on (Talk is
 /// the room's: turning it on ends a hold), and not after the meeting. While it is held the caption over the controls says
-/// Persona hears; where the call sends the span to the voice service, the caption says so until a span went while it
-/// showed (the contract's Wording).
+/// Persona hears; where the call sends the span to the voice service, the line under it says so (the contract's
+/// Wording) until a span went while it showed, whatever word the caption has meanwhile. Until the owner has seen it
+/// there, a span stays on the phone (`MeetingCallRule.toCall`).
 /// A typed question goes as the call's `text` frame while the call is live, else through `…/ask`.
 ///
 /// Stop asks first, as the live sheet's bar does: a stopped recording cannot be continued.
@@ -130,6 +131,7 @@ struct MeetingPageBar: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("meeting-ask-caption")
             }
+            if showsPrivacy { privacyLine }
             if let photoProblem, !size.isAccessibilitySize {
                 Text(photoProblem).font(Theme.Font.caption).foregroundStyle(Theme.danger)
                     .fixedSize(horizontal: false, vertical: true)
@@ -215,8 +217,8 @@ struct MeetingPageBar: View {
     }
 
     /// The caption under the field: why it takes no words (at accessibility sizes the page shows that), that the words
-    /// are too many to send, or Talk's (#3862 phase 4): Persona hears while it is held, a word after a span, and where a
-    /// span goes to the voice service, that it does, until the first one went.
+    /// are too many to send, or Talk's (#3862 phase 4): Persona hears while it is held, or a word after a span. Where a
+    /// span goes to the voice service, the Wording is a line of its own under it (`privacyLine`).
     private var caption: String? {
         if !size.isAccessibilitySize, let blocked { return blocked }
         if overLong { return String(localized: "Too long to send. Shorten it to \(MeetingConversation.maxText.formatted()) characters.") }
@@ -233,6 +235,22 @@ struct MeetingPageBar: View {
 
     /// The span goes to the voice service (the meeting call is live) rather than staying on the phone.
     private var talkSendsAudio: Bool { call.isLive(entry.id) }
+
+    /// The Wording shows under Talk: a span would go to the voice service and the owner hasn't seen one go with it yet.
+    /// Beside a note after a span (hold longer, heard nothing), never replaced by it: the next span goes to the call only
+    /// if this was on screen as it opened. Not while a span is held (the caption says Persona hears).
+    private var showsPrivacy: Bool { showsTalk && talkSendsAudio && !call.privacySeen && !talking }
+
+    /// The contract's Wording as its own line, which tells `MeetingCall` when it is actually on screen: a span opened
+    /// under it may go to the call and marks it seen (`MeetingCall.showingPrivacy`, `MeetingTalkPrivacy.shown`).
+    private var privacyLine: some View {
+        let recording = entry.id
+        return Text(Self.talkPrivacy).font(Theme.Font.caption).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityIdentifier("meeting-talk-privacy")
+            .onAppear { call.showingPrivacy(true, recording: recording) }
+            .onDisappear { call.showingPrivacy(false, recording: recording) }
+    }
 
     private var talkButton: some View {
         MeetingTalkButton(held: talking, hint: talkSendsAudio ? Self.talkPrivacy : String(localized: "Hold while you speak. Persona answers when you let go."),
@@ -251,10 +269,8 @@ struct MeetingPageBar: View {
         switch call.note {
         case .nothingHeard?: return String(localized: "Persona didn’t hear anything. Hold Talk while you speak.")
         case .holdLonger?: return String(localized: "Hold Talk while you speak, then let go.")
-        case nil: break
+        case nil: return nil
         }
-        guard showsTalk, talkSendsAudio, !call.privacySeen else { return nil }
-        return Self.talkPrivacy
     }
 
     /// The contract's Wording for privacy mode (#3862 phase 4), where Talk sends its spans to the voice service.
@@ -264,16 +280,17 @@ struct MeetingPageBar: View {
 
     private func startTalk() {
         focus.wrappedValue = false
-        // The Wording under Talk as the finger went down: a span that goes to the call marks it seen.
-        let shown = talkCaption == Self.talkPrivacy
-        guard call.beginTalk(entry.id, from: .hold, privacyShown: shown) else { return }
+        // Whether the Wording was on screen as the finger went down is `MeetingCall`'s to know (`privacyLine`).
+        guard call.beginTalk(entry.id, from: .hold) else { return }
         Haptics.tap()
         AccessibilityNotification.Announcement(String(localized: "Listening to you…")).post()
     }
 
-    /// VoiceOver's double tap (it can't hold): a talk window, whose hint said where the words go.
+    /// VoiceOver's double tap (it can't hold): a talk window. Its hint says where the words go, but not every way in speaks
+    /// it (hints off, Voice Control, Switch Control, a keyboard): it goes to the call under the Wording on screen, as a
+    /// hold does.
     private func openTalkWindow() {
-        guard call.beginTalk(entry.id, from: .pageWindow, privacyShown: talkSendsAudio) else { return }
+        guard call.beginTalk(entry.id, from: .pageWindow) else { return }
         AccessibilityNotification.Announcement(String(localized: "Listening to you…")).post()
     }
 

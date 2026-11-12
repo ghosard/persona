@@ -12,7 +12,8 @@ import os
 
 /// The recorder's audio as Talk hears it (#3862 phase 4): of every buffer of the tap (16 kHz mono float), the samples inside
 /// the open Talk span go to the meeting call's uplink as PCM16, when there is a call, and its loudness is kept for the
-/// talk window's silence. A buffer reaches the tap only once it is full (100 to 400 ms), so the span is placed on the
+/// talk window's silence, with the room's over the last seconds (`room(before:)`). A buffer reaches the tap only once it
+/// is full (85 to 512 ms), so the span is placed on the
 /// buffers' own clock (`RecordingCapture.listenPosition` at the press and the release), not on when they arrive: the
 /// part of a buffer from before the press stays out, and the buffer that holds the release still sends its part before
 /// `talk off` goes (`covers`). Called on the audio thread; the main actor connects, opens and closes it.
@@ -24,9 +25,25 @@ nonisolated final class MeetingTalkTap: @unchecked Sendable {
     private var span: (start: Double, end: Double?)?
     /// Where the newest buffer it has sent from (or passed over) ends, on that clock.
     private var through = -Double.infinity
+    /// The room as the tap heard it over the last `MeetingTalkWindow.roomSpan` seconds, in pieces of about `piece`, oldest
+    /// first, on that clock.
+    private var heard: [Piece] = []
+
+    /// A short piece of a buffer: where it begins (on the buffers' clock, or within its buffer), how long, how loud.
+    nonisolated struct Piece: Equatable, Sendable {
+        var at: Double
+        var seconds: Double
+        var db: Float
+    }
 
     /// The level of no sound at all.
     static let quiet: Float = -160
+    /// The length of the pieces the room's level is taken from: about a syllable, so the pauses between words count.
+    static let piece: Double = 0.1
+
+    init() {
+        heard.reserveCapacity(128)
+    }
 
     /// The call's uplink, or nil when the call goes (its audio then goes nowhere).
     func connect(_ uplink: VoiceUplink?) {
@@ -59,15 +76,44 @@ nonisolated final class MeetingTalkTap: @unchecked Sendable {
         lock.withLock { through >= position }
     }
 
+    /// What the tap heard of the room in the `MeetingTalkWindow.roomSpan` seconds before `position` (a talk window's
+    /// press), for the window's idea of speech.
+    func room(before position: Double) -> MeetingTalkWindow.Room {
+        lock.withLock {
+            var room = MeetingTalkWindow.Room()
+            for piece in heard where piece.at >= position - MeetingTalkWindow.roomSpan && piece.at < position {
+                room.levels.append(piece.db)
+                room.seconds += piece.seconds
+            }
+            return room
+        }
+    }
+
+    /// Forgets the room heard so far (another recording, whose clock starts again).
+    func forgetRoom() {
+        lock.withLock { heard.removeAll(keepingCapacity: true) }
+    }
+
     /// One buffer of the recording's audio, as the tap converted it, whose first sample lies at `position`.
     func feed(_ buffer: AVAudioPCMBuffer, at position: Double) {
         guard let channel = buffer.floatChannelData?[0], buffer.frameLength > 0 else { return }
         let count = Int(buffer.frameLength)
         let rate = buffer.format.sampleRate
         let samples = UnsafeBufferPointer(start: channel, count: count)
-        let level = Self.level(samples)
+        let (level, pieces) = Self.levels(samples, rate: rate)
         let (uplink, span) = lock.withLock { () -> (VoiceUplink?, (start: Double, end: Double?)?) in
             db = level
+            for var piece in pieces {
+                piece.at += position
+                heard.append(piece)
+            }
+            // Only the last seconds: older pieces go (a few dozen are kept at any time).
+            let from = position + Double(count) / rate - MeetingTalkWindow.roomSpan
+            if let keep = heard.firstIndex(where: { $0.at >= from }) {
+                if keep > 0 { heard.removeFirst(keep) }
+            } else {
+                heard.removeAll(keepingCapacity: true)
+            }
             return (self.uplink, self.span)
         }
         // Converted only for a span (the uplink checks again under its own lock, and resamples it to the call's rate).
@@ -102,7 +148,33 @@ nonisolated final class MeetingTalkTap: @unchecked Sendable {
         guard !samples.isEmpty else { return quiet }
         var sum: Float = 0
         for x in samples { sum += x * x }
-        let rms = (sum / Float(samples.count)).squareRoot()
+        return dbfs(sum, count: samples.count)
+    }
+
+    /// The level of a buffer at `rate`, and of its pieces: as many nearly equal ones as make about `piece` each (one for
+    /// a buffer shorter than that), each `at` from the buffer's start. One pass over the samples.
+    static func levels(_ samples: UnsafeBufferPointer<Float>, rate: Double) -> (level: Float, pieces: [Piece]) {
+        guard !samples.isEmpty, rate > 0 else { return (quiet, []) }
+        let count = samples.count
+        let parts = max(1, Int((Double(count) / (rate * piece)).rounded()))
+        var pieces: [Piece] = []
+        pieces.reserveCapacity(parts)
+        var total: Float = 0
+        for part in 0..<parts {
+            let lo = part * count / parts
+            let hi = (part + 1) * count / parts
+            var sum: Float = 0
+            for i in lo..<hi { sum += samples[i] * samples[i] }
+            total += sum
+            pieces.append(Piece(at: Double(lo) / rate, seconds: Double(hi - lo) / rate, db: dbfs(sum, count: hi - lo)))
+        }
+        return (dbfs(total, count: count), pieces)
+    }
+
+    /// The level, in dBFS, of `count` samples whose squares sum to `sum` (`quiet` for silence).
+    private static func dbfs(_ sum: Float, count: Int) -> Float {
+        guard count > 0 else { return quiet }
+        let rms = (sum / Float(count)).squareRoot()
         return rms > 0 ? max(quiet, 20 * log10(rms)) : quiet
     }
 }

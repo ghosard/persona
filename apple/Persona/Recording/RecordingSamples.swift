@@ -212,14 +212,17 @@ enum RecordingSamples {
         }
     }
 
-    /// `room-talk-held`: once the meeting call is up (at most 30 s; without one the span goes without it), Talk is held
-    /// for 10 seconds as a finger would, so the page shows it held, then let go.
+    /// `room-talk-held`: once the meeting call is up (at most 30 s; without one the span goes without it) and the page
+    /// has shown the Wording under Talk for a moment (at most 10 s more; without it the span stays on the phone), Talk is
+    /// held for 10 seconds as a finger would, so the page shows it held, then let go.
     @MainActor private static func holdTalk() async {
         for _ in 0..<150 where !MeetingCall.shared.isLive(liveMeeting) {
             try? await Task.sleep(for: .milliseconds(200))
         }
-        // As a finger on the page would: the first-use note shows under Talk as it goes down.
-        guard MeetingCall.shared.beginTalk(liveMeeting, from: .hold, privacyShown: true) else { return }
+        for _ in 0..<50 where !MeetingCall.shared.privacyShown(liveMeeting) {
+            try? await Task.sleep(for: .milliseconds(200))
+        }
+        guard MeetingCall.shared.beginTalk(liveMeeting, from: .hold) else { return }
         try? await Task.sleep(for: .seconds(10))
         if MeetingCall.shared.talk?.window == false { MeetingCall.shared.endTalk() }
     }

@@ -54,8 +54,9 @@ final class MeetingTalkUITests: XCTestCase {
         try shot(app, "page")
         let answers = app.descendants(matching: .any).matching(identifier: "meeting-thread-answer")
         let before = answers.count
-        let caption = element(app, "meeting-ask-caption")
-        XCTAssertTrue(caption.exists && caption.label.contains("说话"), "Talk's first-use note isn't showing: \(caption.label)")
+        // The Wording is on screen before the first hold: only then may that span go to the voice service.
+        let privacy = element(app, "meeting-talk-privacy")
+        XCTAssertTrue(privacy.exists && privacy.label.contains("语音服务"), "Talk's first-use note isn't showing:\n\(app.debugDescription)")
         talk.press(forDuration: 3)
 
         XCTAssertTrue(waitFor(15) { ((try? self.voice(hub))?["talk_off"] as? Int ?? 0) >= 1 }, "no talk off: \(String(describing: try? voice(hub)))")
@@ -73,13 +74,14 @@ final class MeetingTalkUITests: XCTestCase {
         try shot(app, "answered")
         XCTAssertEqual((try voice(hub))["audio_out"] as? Int, 0, "nothing of the meeting after the span either")
         // The note was shown as the span went to the voice service: it doesn't show again.
-        XCTAssertFalse(caption.exists && caption.label.contains("语音服务"), "the first-use note stayed: \(caption.label)")
+        XCTAssertFalse(privacy.exists, "the first-use note stayed: \(privacy.label)")
     }
 
-    /// Talk held, as the page shows it (`room-talk-held` holds it for ten seconds once the call is up, with the first-use
-    /// note under Talk, so the owner has been told), then the Lock Screen's Talk: a tap opens a talk window, which the Lock
-    /// Screen says ("Listening to you…"), and Done ends it. A Done tapped once the window has closed (by Done, or on its
-    /// own after 2 s of silence) opens no other span, and no audio ever reaches the call outside a span.
+    /// Talk held, as the page shows it (`room-talk-held` holds it for ten seconds once the call is up and the first-use
+    /// note has been on screen under Talk, so the owner has been told), then the Lock Screen's Talk: a tap opens a talk
+    /// window, which the Lock Screen says ("Listening to you…"), and Done ends it. A Done tapped once the window has
+    /// closed (by Done, or on its own after 2 s of silence) opens no other span, and no audio ever reaches the call
+    /// outside a span.
     @MainActor func testTalkHeldAndTheLockScreensTalkWindow() throws {
         let hub = try mockHub()
         let app = try meetingPage(hub, sample: "room-talk-held")

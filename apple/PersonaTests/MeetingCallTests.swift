@@ -239,12 +239,14 @@ import Testing
         #expect(next.audio.isEmpty)
     }
 
-    /// `frames` samples of a half-scale signal at 16 kHz, as the recorder's tap hands them over.
-    private func tapBuffer(_ frames: Int) throws -> AVAudioPCMBuffer {
+    /// `frames` samples of a half-scale signal at 16 kHz, as the recorder's tap hands them over (`db`: a steady signal at
+    /// that level, dBFS).
+    private func tapBuffer(_ frames: Int, db: Float? = nil) throws -> AVAudioPCMBuffer {
         let format = try #require(AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false))
         let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)))
         buffer.frameLength = AVAudioFrameCount(frames)
-        for i in 0..<frames { buffer.floatChannelData![0][i] = 0.5 }
+        let value = db.map { pow(10, $0 / 20) } ?? 0.5
+        for i in 0..<frames { buffer.floatChannelData![0][i] = value }
         return buffer
     }
 
@@ -305,6 +307,32 @@ import Testing
         #expect(MeetingTalkTap.inside(start: 2, end: nil, position: 0.9, count: 1600, rate: 16000) == nil, "a buffer before the span")
         #expect(MeetingTalkTap.inside(start: 0, end: 0.5, position: 1, count: 1600, rate: 16000) == nil, "a buffer after it")
         #expect(MeetingTalkTap.inside(start: 1, end: nil, position: 0.95, count: 1600, rate: 16000) == 800..<1600)
+    }
+
+    /// A press after a whole 512 ms buffer (4096 frames at a Bluetooth headset's 8 kHz) and a stall in its delivery: the
+    /// span starts no earlier than the press, so nothing the room said before it goes up (the old half-second clamp put
+    /// it 100 ms early here). The release is held back instead: the span never runs past the finger.
+    @Test func aLateBufferNeverSendsWhatCameBeforeThePress() throws {
+        let tap = MeetingTalkTap()
+        let uplink = VoiceUplink(gated: true)
+        let sent = Order()
+        uplink.open(rate: 16000) { pcm in sent.add("\(pcm.count / 2)") }
+        tap.connect(uplink)
+        uplink.talk(true) {}
+        // The tap has the audio up to 10.24 s; the press comes 0.6 s of capture later (a 0.512 s buffer filling, delivered
+        // late), so it truly lies at 10.84 s.
+        let press = RecordingSegmentWriter.placed(.press, base: 10.24, since: 0.6, longestBuffer: 0.512)
+        #expect(press >= 10.84)
+        tap.open(at: press)
+        tap.feed(try tapBuffer(8192), at: 10.24)
+        tap.feed(try tapBuffer(8192), at: 10.752)
+        let first = try #require(sent.items.first.flatMap { Int($0) })
+        let total = sent.items.compactMap { Int($0) }.reduce(0, +)
+        #expect(Double(total) / 16000 <= 11.264 - 10.84 + 1e-9, "nothing from before the press: \(sent.items)")
+        #expect(first > 0)
+        // Let go after a stall of 2 s: the release is held at the longest buffer and its delivery past what the tap had.
+        let release = RecordingSegmentWriter.placed(.release, base: 11.264, since: 2, longestBuffer: 0.512)
+        #expect(release < 11.264 + 2 && release <= 11.264 + 0.512 + RecordingSegmentWriter.deliveryMargin + 1e-9)
     }
 
     /// A span the call carried and lost (its socket dropped, the call ended) is asked without the call over its whole
@@ -411,6 +439,77 @@ import Testing
         #expect(window.heard(-25, at: now.addingTimeInterval(60)) == .limit)
     }
 
+    /// The owner speaks 3 s into the phone over a room that keeps talking at a normal level (above `speechLevel`): the
+    /// window ends 2 s after they stop, not at its 60 s limit with the room's talk going to the voice service meanwhile.
+    @Test func theRoomTalkingDoesNotKeepTheWindowOpen() {
+        let chatter: Float = -32
+        var window = MeetingTalkWindow(opened: now, room: .init(levels: Array(repeating: chatter, count: 50), seconds: 5))
+        #expect(window.speechThreshold == chatter + MeetingTalkWindow.aboveRoom)
+        func at(_ tenths: Int) -> Date { now.addingTimeInterval(Double(tenths) / 10) }
+        for t in 1...10 { #expect(window.heard(chatter, at: at(t)) == nil, "the room, before the owner speaks") }
+        for t in 11...40 { #expect(window.heard(-14, at: at(t)) == nil, "the owner, into the phone") }
+        #expect(window.heardSpeech)
+        for t in 41...59 { #expect(window.heard(chatter, at: at(t)) == nil, "the room again") }
+        #expect(window.heard(chatter, at: at(60)) == .silence, "2 s after the owner stopped, the room still talking")
+        // Without the room's level (too little of it heard) speech is `speechLevel` alone, as before: the same room
+        // would keep the window to its limit.
+        var unmeasured = MeetingTalkWindow(opened: now, room: .init(levels: Array(repeating: chatter, count: 10), seconds: 1))
+        #expect(unmeasured.speechThreshold == MeetingTalkWindow.speechLevel)
+        for t in 1...599 {
+            if let end = unmeasured.heard(chatter, at: at(t)) { Issue.record("ended at \(t): \(end)") }
+        }
+        #expect(unmeasured.heard(chatter, at: at(600)) == .limit)
+    }
+
+    /// Talk tapped by mistake in a room talking unevenly, the owner silent: no speech, so the window ends after 20 s.
+    @Test func aSilentOwnerInATalkingRoomEndsAfterTwentySeconds() {
+        let room = (0..<50).map { $0 % 2 == 0 ? Float(-40) : -28 }
+        var window = MeetingTalkWindow(opened: now, room: .init(levels: room, seconds: 5))
+        for t in 1..<200 {
+            #expect(window.heard(room[t % room.count], at: now.addingTimeInterval(Double(t) / 10)) == nil)
+        }
+        #expect(window.heard(-28, at: now.addingTimeInterval(20)) == .noSpeech)
+        #expect(!window.heardSpeech)
+    }
+
+    /// What counts as speech: `aboveRoom` over the room's quieter moments, never below `speechLevel`; in a quiet room, or
+    /// before enough of the room was heard, `speechLevel` as before.
+    @Test func whatCountsAsSpeech() {
+        #expect(MeetingTalkWindow.threshold(.init(levels: Array(repeating: -70, count: 30), seconds: 3)) == MeetingTalkWindow.speechLevel,
+                "a quiet room")
+        #expect(MeetingTalkWindow.threshold(.init()) == MeetingTalkWindow.speechLevel, "nothing heard yet")
+        #expect(MeetingTalkWindow.threshold(.init(levels: [-20, -20], seconds: 0.2)) == MeetingTalkWindow.speechLevel, "too little")
+        // The owner's own words just before the tap, into the phone, hardly move it: the room's quieter moments set it.
+        let room: [Float] = Array(repeating: -42, count: 15) + Array(repeating: -30, count: 25) + Array(repeating: -15, count: 10)
+        #expect(MeetingTalkWindow.roomLevel(.init(levels: room.shuffled(), seconds: 5)) == -42)
+        #expect(MeetingTalkWindow.threshold(.init(levels: room, seconds: 5)) == -42 + MeetingTalkWindow.aboveRoom)
+    }
+
+    /// The tap keeps what it heard of the room over the last 5 s, in pieces of about 100 ms (a long buffer cut into
+    /// several), for the window's idea of speech; another recording starts with none.
+    @Test func theTapHearsTheRoom() throws {
+        let tap = MeetingTalkTap()
+        // 8 s of 512 ms buffers (a Bluetooth headset's), the room at -30 dBFS.
+        for k in 0..<16 { tap.feed(try tapBuffer(8192, db: -30), at: Double(k) * 0.512) }
+        let room = tap.room(before: 16 * 0.512)
+        #expect(room.levels.count == 48, "5 pieces a buffer, the last 5 s")
+        #expect(room.seconds > 4.8 && room.seconds <= MeetingTalkWindow.roomSpan)
+        #expect(room.levels.allSatisfy { abs($0 + 30) < 0.1 })
+        #expect(tap.room(before: 2).levels.count == 0, "nothing kept from more than 5 s back")
+        tap.forgetRoom()
+        #expect(tap.room(before: 16 * 0.512) == MeetingTalkWindow.Room())
+        // A buffer half sound, half silence: its pieces show the pause the whole buffer's level hides.
+        let half = try tapBuffer(3200)
+        for i in 1600..<3200 { half.floatChannelData![0][i] = 0 }
+        let samples = UnsafeBufferPointer(start: half.floatChannelData![0], count: 3200)
+        let (level, pieces) = MeetingTalkTap.levels(samples, rate: 16000)
+        #expect(abs(level - (-9.03)) < 0.05)
+        #expect(pieces.map(\.at) == [0, 0.1])
+        #expect(abs(pieces[0].db - (-6.02)) < 0.05 && pieces[1].db == MeetingTalkTap.quiet)
+        let short = UnsafeBufferPointer(start: half.floatChannelData![0], count: 1365)
+        #expect(MeetingTalkTap.levels(short, rate: 16000).pieces.count == 1, "an 85 ms buffer is one piece")
+    }
+
     @Test func anotherTapEndsTheWindow() {
         var window = MeetingTalkWindow(opened: now)
         #expect(window.tap() == .tapped)
@@ -432,14 +531,43 @@ import Testing
         #expect(TalkInMeetingIntent(recordingID: "r").open == nil)
     }
 
-    /// A span goes to the live call from the page (held, or VoiceOver's window, where the Wording shows), but from the Lock
-    /// Screen or the island only once the owner was told what Talk sends: before that it is asked without the call.
-    @Test func aLockScreenWindowGoesToTheCallOnlyOnceTheOwnerWasTold() {
-        #expect(MeetingCallRule.toCall(live: true, source: .hold, privacySeen: false))
-        #expect(MeetingCallRule.toCall(live: true, source: .pageWindow, privacySeen: false))
-        #expect(!MeetingCallRule.toCall(live: true, source: .activity, privacySeen: false), "the Lock Screen shows no Wording")
-        #expect(MeetingCallRule.toCall(live: true, source: .activity, privacySeen: true))
-        #expect(!MeetingCallRule.toCall(live: false, source: .hold, privacySeen: true), "no call: asked without it")
+    /// No span reaches the voice service before the owner was told what Talk sends: from the page (held, or VoiceOver's
+    /// window) once the Wording was seen with a span before or is on screen as this one opens; from the Lock Screen or the
+    /// island only once seen, since they never show it. Otherwise it is asked without the call, its audio on the phone.
+    @Test func noSpanGoesToTheCallBeforeTheWordingShowed() {
+        for source in [MeetingTalkSource.hold, .pageWindow] {
+            #expect(MeetingCallRule.toCall(live: true, source: source, privacySeen: true, privacyShown: false), "seen: \(source)")
+            #expect(MeetingCallRule.toCall(live: true, source: source, privacySeen: false, privacyShown: true), "shown: \(source)")
+            #expect(!MeetingCallRule.toCall(live: true, source: source, privacySeen: false, privacyShown: false),
+                    "neither (a note in its place, the call not up as the page drew): \(source)")
+        }
+        #expect(MeetingCallRule.toCall(live: true, source: .activity, privacySeen: true, privacyShown: false), "seen")
+        #expect(!MeetingCallRule.toCall(live: true, source: .activity, privacySeen: false, privacyShown: true),
+                "the Lock Screen shows no Wording, whatever the page has")
+        #expect(!MeetingCallRule.toCall(live: true, source: .activity, privacySeen: false, privacyShown: false), "neither")
+        for source in [MeetingTalkSource.hold, .pageWindow, .activity] {
+            #expect(!MeetingCallRule.toCall(live: false, source: source, privacySeen: true, privacyShown: true), "no call: asked without it")
+        }
+    }
+
+    /// Shown is drawn on the page a moment before the span opens, on that recording's page: not drawn in the same instant
+    /// (the call came up just as the finger went down), not another recording's, not once it left the screen.
+    @Test func theWordingCountsOnlyOnceItWasOnScreen() {
+        #expect(!MeetingTalkPrivacy.shown(since: nil, at: now))
+        #expect(!MeetingTalkPrivacy.shown(since: now, at: now.addingTimeInterval(0.2)), "drawn as the finger went down")
+        #expect(MeetingTalkPrivacy.shown(since: now, at: now.addingTimeInterval(MeetingTalkPrivacy.shownFor)))
+        let call = MeetingCall()
+        #expect(!call.privacyShown(recording))
+        call.showingPrivacy(true, recording: recording)
+        let drawn = Date.now
+        #expect(!call.privacyShown(recording, at: drawn), "just drawn")
+        call.showingPrivacy(true, recording: recording)
+        #expect(call.privacyShown(recording, at: drawn.addingTimeInterval(1.5)), "drawn again keeps when it first showed")
+        #expect(!call.privacyShown(UUID(), at: drawn.addingTimeInterval(1.5)), "another recording's page")
+        call.showingPrivacy(false, recording: UUID())
+        #expect(call.privacyShown(recording, at: drawn.addingTimeInterval(1.5)), "another page leaving changes nothing")
+        call.showingPrivacy(false, recording: recording)
+        #expect(!call.privacyShown(recording, at: drawn.addingTimeInterval(5)), "gone from the screen")
     }
 
     // MARK: Talk without a call

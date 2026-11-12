@@ -15,9 +15,10 @@ import OSLog
 ///
 /// **Talk.** Held on the page, or a window the Lock Screen opens (`MeetingTalkWindow`). With the call live a span is a
 /// `talk on` … `talk off` pair, and between them the recorder's audio goes up (`VoiceUplink.talk`), only the samples
-/// captured inside the span (`MeetingTalkTap`); otherwise (a listener, no `meeting`, the call down, or a Lock Screen
-/// window before the owner was told what Talk sends) the segment is cut at the span's start and end, transcribed on the
-/// phone, and asked with `…/ask` (`spoken: true`), answered as any ask (aloud for a participant, `MeetingSpeaker`). A
+/// captured inside the span (`MeetingTalkTap`); otherwise (a listener, no `meeting`, the call down, or a span opened
+/// before the owner was told what Talk sends: `MeetingCallRule.toCall`) the segment is cut at the span's start and end,
+/// transcribed on the phone, and asked with `…/ask` (`spoken: true`), answered as any ask (aloud for a participant,
+/// `MeetingSpeaker`). A
 /// span the call loses midway (its socket dropped) goes on that way. A hold ends when the finger lifts, when the page's
 /// Talk goes (the page left, Just Me), at the activity's Done, or after 60 seconds.
 ///
@@ -34,9 +35,9 @@ import OSLog
     private(set) var talk: Talk?
     /// A word under Talk after a span, for a moment.
     private(set) var note: Note?
-    /// The owner was shown what Talk sends (the page's first-use note, or Talk's spoken hint) as a span went to the voice
-    /// service: the note stops, and a Lock Screen window may go to the call (`MeetingTalkPrivacy`). Read from the
-    /// defaults once, at the start.
+    /// The owner was shown what Talk sends (the Wording on the meeting page, under Talk) as a span went to the voice
+    /// service: the note stops, and a span from anywhere, the Lock Screen's included, may go to the call
+    /// (`MeetingTalkPrivacy`). Read from the defaults once, at the start.
     private(set) var privacySeen = false
     /// The latest answer a meeting call of the recording said, kept once that call went (`answer(for:)`).
     private var keptAnswer: (recording: UUID, caption: VoiceCaption)?
@@ -83,13 +84,16 @@ import OSLog
     static let longestVoice: Double = 150
     /// The longest a hold stays open (the talk window's limit): a finger that never lifts, or a hold the page lost, ends.
     static let longestHold: TimeInterval = MeetingTalkWindow.limit
-    /// How long `talk off` waits for the tap's buffer that holds the release (a buffer is at most 0.5 s).
-    static let tailWait: TimeInterval = 0.6
+    /// How long `talk off` waits for the tap's buffer that holds the release: a buffer is at most 0.512 s (4096 frames
+    /// at a Bluetooth headset's 8 kHz), and it reaches the tap a moment after its last sample. Later, the tail is cut.
+    static let tailWait: TimeInterval = 0.7
 
     @ObservationIgnored private let tap = MeetingTalkTap()
     @ObservationIgnored private var started = false
     @ObservationIgnored private var listening = false
     @ObservationIgnored private var window: MeetingTalkWindow?
+    /// The meeting page has the Wording on screen under Talk, for this recording, since then (`showingPrivacy`).
+    @ObservationIgnored private var privacyOnScreen: (recording: UUID, since: Date)?
     @ObservationIgnored private var windowTask: Task<Void, Never>?
     @ObservationIgnored private var holdTask: Task<Void, Never>?
     @ObservationIgnored private var noteTask: Task<Void, Never>?
@@ -191,22 +195,41 @@ import OSLog
 
     // MARK: Talk
 
-    /// Opens a Talk span from `source`: to the call when it is live (a Lock Screen window only once the owner was told what
-    /// Talk sends, `MeetingCallRule.toCall`), else for a question asked without it. `privacyShown`: the page showed the
-    /// Wording as it opened (the first-use note under Talk, or Talk's spoken hint), so a span that goes to the call marks
-    /// the note seen. False when Talk isn't offered now, or a span is already open.
-    @discardableResult func beginTalk(_ recording: UUID, from source: MeetingTalkSource, privacyShown: Bool = false) -> Bool {
+    /// The meeting page put the Wording under Talk on screen (`true`), or took it off: drawn, not merely due, so a span
+    /// goes to the call only after the owner could see it (`MeetingTalkPrivacy.shown`).
+    func showingPrivacy(_ showing: Bool, recording: UUID) {
+        if showing {
+            if privacyOnScreen?.recording != recording { privacyOnScreen = (recording, .now) }
+        } else if privacyOnScreen?.recording == recording {
+            privacyOnScreen = nil
+        }
+    }
+
+    /// The Wording is on the recording's page now, and has been for `MeetingTalkPrivacy.shownFor`.
+    func privacyShown(_ recording: UUID, at now: Date = .now) -> Bool {
+        guard let privacyOnScreen, privacyOnScreen.recording == recording else { return false }
+        return MeetingTalkPrivacy.shown(since: privacyOnScreen.since, at: now)
+    }
+
+    /// Opens a Talk span from `source`: to the call when it is live and the owner was told what Talk sends (they saw the
+    /// Wording go with a span before, or the page shows it now; never the Lock Screen's alone: `MeetingCallRule.toCall`),
+    /// else for a question asked without it, whose audio stays on the phone. A span that goes to the call while the page
+    /// shows the Wording marks it seen. False when Talk isn't offered now, or a span is already open.
+    @discardableResult func beginTalk(_ recording: UUID, from source: MeetingTalkSource) -> Bool {
         guard talk == nil, let entry = library.entry(recording), canTalk(entry) else { return false }
         // Where the press lies on the tap's clock: a buffer's samples from before it stay out of the span.
-        let position = capture.listenPosition
+        let position = capture.listenPosition(.press)
         let at = capture.timeline
+        // Read before anything changes the page: the Wording under Talk as the finger went down.
+        let shown = source != .activity && privacyShown(recording)
         // A span let go a moment ago: its `talk off` goes first.
         sendTalkOff()
         let live = isLive(recording)
         // What Persona is saying gives way: the owner speaks now.
         if live, call?.speaking == true { call?.interruptSpeech() }
         MeetingSpeaker.shared.stop()
-        let viaCall = MeetingCallRule.toCall(live: live, source: source, privacySeen: privacySeen) && call?.talk(true) == true
+        let viaCall = MeetingCallRule.toCall(live: live, source: source, privacySeen: privacySeen, privacyShown: shown)
+            && call?.talk(true) == true
         if viaCall {
             tap.open(at: position)
         } else {
@@ -216,11 +239,12 @@ import OSLog
         let opened = Talk(recording: recording, source: source, viaCall: viaCall, start: at, opened: .now)
         talk = opened
         showNote(nil)
-        if viaCall, privacyShown, !privacySeen {
+        // Only a span that started while the Wording showed: one that went because it was seen before changes nothing.
+        if viaCall, shown, !privacySeen {
             privacySeen = true
             MeetingTalkPrivacy.seen()
         }
-        if opened.window { openWindow() } else { capHold(opened.id) }
+        if opened.window { openWindow(room: tap.room(before: position)) } else { capHold(opened.id) }
         log.info("talk: \(String(describing: source), privacy: .public) opened, \(viaCall ? "to the call" : "asked without it", privacy: .public)")
         return true
     }
@@ -244,7 +268,7 @@ import OSLog
             talk = lost
         }
         if talk.viaCall {
-            closeOnCall(talk.recording, through: capture.listenPosition)
+            closeOnCall(talk.recording, through: capture.listenPosition(.release))
         } else {
             capture.flushSegment()
             if ask, !short { Task { await askWithout(talk, end: end) } }
@@ -319,8 +343,9 @@ import OSLog
         }
     }
 
-    private func openWindow() {
-        window = MeetingTalkWindow(opened: .now)
+    /// `room`: what the tap heard just before the window opened, so the room's own talking isn't taken for the owner's.
+    private func openWindow(room: MeetingTalkWindow.Room) {
+        window = MeetingTalkWindow(opened: .now, room: room)
         windowTask?.cancel()
         windowTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -396,6 +421,8 @@ import OSLog
         if listens != listening {
             listening = listens
             let tap = tap
+            // A new recording's clock starts again: the room heard in another one says nothing about this one.
+            if listens { tap.forgetRoom() }
             capture.listen(listens ? { @Sendable buffer, at in tap.feed(buffer, at: at) } : nil)
         }
         if let talk, talk.recording != id || state != .recording || entry.map(canTalk) != true {
@@ -556,9 +583,19 @@ import OSLog
 }
 
 /// Whether the owner has been told what Talk sends (#3862 phase 4, the contract's「Wording」): the first-use note under
-/// Talk shows until the first span that went to the voice service. Written once.
+/// Talk shows until the first span that went to the voice service while it showed. Written once.
 nonisolated enum MeetingTalkPrivacy {
     static let seenKey = "recording.meeting.talkPrivacySeen"
+
+    /// How long the Wording must have been on the page before a span counts as opened under it: drawn in the same moment
+    /// as the finger went down (the call came up just then) is not shown.
+    static let shownFor: TimeInterval = 1
+
+    /// The Wording, on screen `since` (nil: not on screen), counts as shown at `now`.
+    static func shown(since: Date?, at now: Date) -> Bool {
+        guard let since else { return false }
+        return now.timeIntervalSince(since) >= shownFor
+    }
 
     static var isSeen: Bool { UserDefaults.standard.bool(forKey: seenKey) }
 

@@ -129,6 +129,9 @@ nonisolated final class RecordingSegmentWriter: @unchecked Sendable {
         var listener: (@Sendable (AVAudioPCMBuffer, Double) -> Void)?
         /// Host time (seconds) the newest buffer's last sample was captured at, or when the microphone last opened.
         var capturedUntil: Double?
+        /// The longest input buffer (seconds) the tap has had since it was installed (the input's rate may change with
+        /// its route): how far a release may run ahead of `frames` (`placed`).
+        var longestBuffer: Double = 0
     }
     private let shared = OSAllocatedUnfairLock(initialState: Shared())
     private var converter: AVAudioConverter?
@@ -186,21 +189,42 @@ nonisolated final class RecordingSegmentWriter: @unchecked Sendable {
     /// midnight, with its next day.
     var elapsed: Double { Double(shared.withLock { $0.frames }) / RecordingAudioSpec.sampleRate }
 
-    /// Where the sound the microphone takes at this moment will lie on the timeline: `elapsed` (the buffers the tap has
-    /// had) plus what was captured since the newest of them, which reaches the tap only once its buffer is full (100 to
-    /// 400 ms). `elapsed` while paused. Talk's press and release (#3862 phase 4): the samples of a buffer from before the
-    /// press are not the span's.
-    var elapsedNow: Double {
+    /// Where the sound the microphone takes at this moment will lie on the timeline, for one edge of a Talk span (#3862
+    /// phase 4): `elapsed` (the buffers the tap has had) plus what was captured since the newest of them, which reaches
+    /// the tap only once its buffer is full (about 85 ms at 48 kHz, 512 ms at a Bluetooth headset's 8 kHz), each edge
+    /// placed to its own safe side (`placed`). `elapsed` while paused. The samples of a buffer from before the press are
+    /// not the span's, nor those from after the release.
+    func elapsedNow(_ edge: SpanEdge) -> Double {
         let now = AVAudioTime.seconds(forHostTime: mach_absolute_time())
         return shared.withLock { s in
             let base = Double(s.frames) / RecordingAudioSpec.sampleRate
             guard s.running, let until = s.capturedUntil else { return base }
-            return base + min(Self.longestBuffer, max(0, now - until))
+            return Self.placed(edge, base: base, since: now - until, longestBuffer: s.longestBuffer)
         }
     }
 
-    /// The most a tap's buffer holds (its size at the lowest input rate): `elapsedNow` never runs further ahead.
-    static let longestBuffer: Double = 0.5
+    /// The press or the release of a Talk span.
+    nonisolated enum SpanEdge: Sendable { case press, release }
+
+    /// An edge `since` seconds after the newest buffer's last sample, which lies at `base`. A press is never placed before
+    /// the moment it happened: whatever `since` is (a buffer longer than usual, delivery running late), the press is at
+    /// least that far on, plus `pressMargin`; a stall of the input (no audio captured for a while) only places it later,
+    /// cutting the owner's first words rather than sending what the room said before. Only a release is held back: at
+    /// most the longest buffer seen and its delivery (`deliveryMargin`) past `base`, so a stall never lets the span run on
+    /// past the finger's lift.
+    static func placed(_ edge: SpanEdge, base: Double, since: Double, longestBuffer: Double) -> Double {
+        let since = max(0, since)
+        switch edge {
+        case .press: return base + since + pressMargin
+        case .release: return base + min(since, longestBuffer + deliveryMargin)
+        }
+    }
+
+    /// Added to a press: the converter's own delay and a buffer without a host time (its end then taken as when it
+    /// arrived) would otherwise place it a few milliseconds early. Nobody speaks in the first 50 ms after pressing.
+    static let pressMargin: Double = 0.05
+    /// How late after its last sample a buffer may still reach the tap in normal running.
+    static let deliveryMargin: Double = 0.1
     /// Recent input level, 0…1 (perceptual, for meters).
     var level: Float { shared.withLock { $0.level } }
     var failure: String? { shared.withLock { $0.failure } }
@@ -423,6 +447,8 @@ nonisolated final class RecordingSegmentWriter: @unchecked Sendable {
         let inFormat = input.outputFormat(forBus: 0)
         guard inFormat.sampleRate > 0, inFormat.channelCount > 0 else { throw RecorderError.noInput }
         converter = AVAudioConverter(from: inFormat, to: outFormat)
+        // A new route may bring another rate, and with it another buffer length.
+        shared.withLock { $0.longestBuffer = 0 }
         input.installTap(onBus: 0, bufferSize: 4096, format: inFormat) { [weak self] buffer, when in
             // `when` is the first sample's host time; without it, assume the buffer just finished filling.
             let now = AVAudioTime.seconds(forHostTime: mach_absolute_time())
@@ -454,11 +480,13 @@ nonisolated final class RecordingSegmentWriter: @unchecked Sendable {
         guard error == nil, out.frameLength > 0 else { return }
         let level = Self.level(of: out)
         let frames = AVAudioFramePosition(out.frameLength)
+        let length = Double(buffer.frameLength) / buffer.format.sampleRate
         let (listener, position) = shared.withLock { s -> ((@Sendable (AVAudioPCMBuffer, Double) -> Void)?, Double) in
             let before = s.frames
             s.frames += frames
             s.level = s.level * 0.6 + level * 0.4
             s.capturedUntil = capturedUntil
+            s.longestBuffer = max(s.longestBuffer, length)
             return (s.listener, Double(before) / RecordingAudioSpec.sampleRate)
         }
         // Read only (the writer's queue gets the same buffer): the listener copies what it keeps.

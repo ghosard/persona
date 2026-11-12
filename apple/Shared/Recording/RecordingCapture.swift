@@ -378,14 +378,16 @@ final class RecordingCapture {
 
     /// Where what the microphone takes at this moment will lie, on the clock of the listener's positions (`listen`): the
     /// recording's timeline plus what the tap's next buffer has gathered so far (`RecordingSegmentWriter.elapsedNow`).
-    /// Talk's press and release, so a buffer's samples from before the press stay out of the span (#3862 phase 4).
-    var listenPosition: Double {
+    /// Talk's press and release, each placed to its safe side, so a buffer's samples from before the press or after the
+    /// release stay out of the span (#3862 phase 4).
+    func listenPosition(_ edge: RecordingSegmentWriter.SpanEdge) -> Double {
         #if DEBUG
         if writer == nil, recordingID != nil {
-            return sampleFed + min(RecordingSegmentWriter.longestBuffer, max(0, Date.now.timeIntervalSince(sampleFedAt)))
+            return RecordingSegmentWriter.placed(edge, base: sampleFed, since: Date.now.timeIntervalSince(sampleFedAt),
+                                                 longestBuffer: Self.sampleBuffer)
         }
         #endif
-        return writer?.elapsedNow ?? timeline
+        return writer?.elapsedNow(edge) ?? timeline
     }
 
     #if DEBUG
@@ -393,6 +395,8 @@ final class RecordingCapture {
     /// positions, which a made-up recording's clock (it stands still) can't give.
     @ObservationIgnored private var sampleFed: Double = 0
     @ObservationIgnored private var sampleFedAt = Date.distantPast
+    /// The made-up audio comes 100 ms at a time (`RecordingSamples.startTalkAudio`).
+    private static let sampleBuffer: Double = 0.1
 
     /// A made-up recording's audio (`-showMeetingSample room-…`): canned PCM handed to the listener as the tap would,
     /// so Talk works with no microphone.

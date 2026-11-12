@@ -42,11 +42,14 @@ nonisolated enum MeetingCallRule {
 
     static let probeRetries: [TimeInterval] = [30, 120, 300]
 
-    /// Whether a Talk span goes to the live meeting call (else it is asked without one, through `…/ask`). One the Lock
-    /// Screen or the island opened goes only once the owner has been told what Talk sends (`MeetingTalkPrivacy`): those
-    /// surfaces don't show the Wording, the meeting page does (under Talk, and in its spoken hint).
-    static func toCall(live: Bool, source: MeetingTalkSource, privacySeen: Bool) -> Bool {
-        live && (source != .activity || privacySeen)
+    /// Whether a Talk span goes to the live meeting call (else it is asked without one, through `…/ask`, and its audio
+    /// stays on the phone). From any source only once the owner has been told what Talk sends: they saw the Wording
+    /// before (`privacySeen`, `MeetingTalkPrivacy`), or it is on the meeting page under Talk as this span opens
+    /// (`privacyShown`, `MeetingTalkPrivacy.shown`). The Lock Screen and the island never show it, so a span they open
+    /// needs `privacySeen` whatever the caller says. A first span from a page that showed a note in its place, or before
+    /// the call was up, therefore stays on the phone.
+    static func toCall(live: Bool, source: MeetingTalkSource, privacySeen: Bool, privacyShown: Bool) -> Bool {
+        live && (privacySeen || (privacyShown && source != .activity))
     }
 
     /// What a tap on the Live Activity's Talk or Done does: the action the button showed (`open`), checked against what is
@@ -114,6 +117,13 @@ nonisolated enum MeetingActivityTap: Equatable, Sendable { case open, close, ign
 /// The Lock Screen's and the island's talk window (#3862 phase 4): their buttons can't be held, so a tap opens it, and it
 /// ends on another tap, 2 seconds of silence after speech, 20 seconds without speech, or 60 seconds in all. Pure: the
 /// caller hands in the microphone's level and the time.
+///
+/// What counts as speech is the owner's voice, not the room's: the microphone hears the whole room, and people talking
+/// at a normal level would otherwise keep a window open for its full 60 seconds, all of it going to the voice service.
+/// So the window takes the room's level as it opens (`Room`, the tap's last seconds before the tap on Talk) and counts
+/// a buffer as speech only `aboveRoom` louder than that, and never below `speechLevel`: the owner holds the phone and
+/// speaks into it, others are further away. Without enough of the room heard yet (the recording just started or came
+/// back from a pause), it counts `speechLevel` alone, as before.
 nonisolated struct MeetingTalkWindow: Equatable, Sendable {
     nonisolated enum End: Equatable, Sendable {
         /// Another tap.
@@ -126,27 +136,61 @@ nonisolated struct MeetingTalkWindow: Equatable, Sendable {
         case limit
     }
 
+    /// The room's level as a window opens: the levels (dBFS) of the tap's short pieces of audio (`MeetingTalkTap.piece`)
+    /// over the last `roomSpan` seconds before it, and how many seconds they cover.
+    nonisolated struct Room: Equatable, Sendable {
+        var levels: [Float] = []
+        var seconds: Double = 0
+    }
+
     static let silenceAfterSpeech: TimeInterval = 2
     static let noSpeechLimit: TimeInterval = 20
     static let limit: TimeInterval = 60
-    /// A buffer at or above this level (dBFS of the 16 kHz audio) is speech; a quiet room is well below it.
+    /// A buffer below this level (dBFS of the 16 kHz audio) is never speech; a quiet room is well below it.
     static let speechLevel: Float = -40
+    /// How far back the room's level is taken from, before the window opens.
+    static let roomSpan: TimeInterval = 5
+    /// The least of that the tap must have heard for the room's level to count (else `speechLevel` alone).
+    static let roomHeard: TimeInterval = 2
+    /// The room's level is this low percentile of its pieces' levels: the room between its louder moments. Low, so the
+    /// owner's own words just before the tap (spoken into the phone, with pauses) hardly raise it.
+    static let roomPercentile = 0.25
+    /// How much louder than the room's level speech must be (dB): the owner speaks into the phone, others are further
+    /// away, and the peaks of a room talking at a normal level stay under it. A starting value: the simulator can't
+    /// measure rooms (docs/apple/recording.md「Realtime voice (phase 4)」).
+    static let aboveRoom: Float = 15
 
     let opened: Date
+    /// The level a buffer must reach to count as speech in this window.
+    let speechThreshold: Float
     /// When speech was last heard; nil before any.
     private(set) var lastSpeech: Date?
     private(set) var ended: End?
 
-    init(opened: Date) {
+    init(opened: Date, room: Room = Room()) {
         self.opened = opened
+        speechThreshold = Self.threshold(room)
     }
 
     var heardSpeech: Bool { lastSpeech != nil }
 
+    /// The room's level (`roomPercentile` of what it heard), or nil when less than `roomHeard` of it was heard.
+    static func roomLevel(_ room: Room) -> Float? {
+        guard room.seconds >= roomHeard, !room.levels.isEmpty else { return nil }
+        let sorted = room.levels.sorted()
+        return sorted[Int(Double(sorted.count - 1) * roomPercentile)]
+    }
+
+    /// What counts as speech: `aboveRoom` over the room's level, never below `speechLevel`; `speechLevel` alone when the
+    /// room's level isn't known.
+    static func threshold(_ room: Room) -> Float {
+        roomLevel(room).map { max(speechLevel, $0 + aboveRoom) } ?? speechLevel
+    }
+
     /// The microphone's level `db` at `now`, then whether the window closes (and why). Nothing once it ended.
     mutating func heard(_ db: Float, at now: Date) -> End? {
         guard ended == nil else { return nil }
-        if db >= Self.speechLevel { lastSpeech = now }
+        if db >= speechThreshold { lastSpeech = now }
         return tick(now)
     }
 
