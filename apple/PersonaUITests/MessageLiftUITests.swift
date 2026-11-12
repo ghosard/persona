@@ -660,30 +660,33 @@ final class MessageLiftUITests: XCTestCase {
         }
     }
 
-    /// The edit menu's items page by page, going on with its last button (›) until a page repeats; written to an
-    /// attachment, `name`. The menu pages at large text sizes, so an item missing from the first page may be on another.
-    @MainActor private func menuPages(_ name: String) -> [[String]] {
-        let copy = menuItem("拷贝")
-        guard copy.waitForExistence(timeout: 3) else { return [] }
-        let band = copy.frame.insetBy(dx: -app.frame.width, dy: 0)
-        var pages: [[String]] = []
-        for _ in 0..<6 {
-            let items = (app.buttons.allElementsBoundByIndex + app.menuItems.allElementsBoundByIndex)
-                .filter { $0.exists && !$0.frame.isEmpty && $0.frame.height < copy.frame.height * 2 // not the backdrop's Close
-                    && band.contains(CGPoint(x: band.midX, y: $0.frame.midY)) && app.frame.intersects($0.frame) }
-                .sorted { $0.frame.minX < $1.frame.minX }
-            let labels = items.map(\.label)
-            if pages.last == labels { break }
-            pages.append(labels)
-            guard let next = items.last, !["引用", "拷贝", "查询", "翻译", "共享…", "全选", "搜索网页"].contains(next.label) else { break }
-            next.tap()
-            usleep(600_000)
+    /// The edit menu's items: those in its row, and all of them once its last button (›, when the row has no room
+    /// for them all) opens the list; written to an attachment, `name`.
+    @MainActor private func editMenuItems(_ name: String) -> (row: [String], all: [String]) {
+        let known = ["引用", "拷贝", "查询", "翻译", "共享…", "全选", "搜索网页"]
+        func shown(_ label: String) -> XCUIElement? {
+            [app.menuItems[label].firstMatch, app.buttons[label].firstMatch].first { $0.exists && $0.isHittable }
         }
-        let a = XCTAttachment(string: pages.map { $0.joined(separator: " | ") }.joined(separator: "\n"))
-        a.name = "menu-pages-\(name)-\(scheme)"
+        guard let copy = shown("拷贝") else { return ([], []) }
+        let band = copy.frame
+        let inRow = (app.buttons.allElementsBoundByIndex + app.menuItems.allElementsBoundByIndex)
+            .filter { e in
+                let f = e.frame
+                return !f.isEmpty && f.height < band.height * 2 && abs(f.midY - band.midY) < band.height / 2 && app.frame.intersects(f)
+            }
+            .sorted { $0.frame.minX < $1.frame.minX }
+        let row = inRow.map(\.label)
+        var all = row.filter { known.contains($0) }
+        if let more = inRow.last, !known.contains(more.label) {
+            more.tap()
+            sleep(1)
+            all = known.filter { shown($0) != nil }
+        }
+        let a = XCTAttachment(string: "row: \(row.joined(separator: " | "))\nall: \(all.joined(separator: " | "))")
+        a.name = "menu-items-\(name)-\(scheme)"
         a.lifetime = .keepAlways
         add(a)
-        return pages
+        return (row, all)
     }
 
     /// A long press at a point of the lifted copy (in the window): selects the word there in place.
@@ -709,14 +712,12 @@ final class MessageLiftUITests: XCTestCase {
                 XCTAssertTrue(shows(end), "the pressed line shows")
                 pressInLift(CGPoint(x: end.frame.minX + 12, y: end.frame.maxY - 12))
                 checkTheMenuIsClear("bottom" + tag)
-                // Quote (引用) is the menu's first item; at the largest text size the first page showed 拷贝 first.
-                let pages = menuPages("bottom" + tag)
-                XCTAssertTrue(pages.joined().contains("引用"), "\(tag): 引用 is on a page of the edit menu: \(pages)")
-                if !menuItem("拷贝").isHittable { // paged on: back to a fresh menu
-                    pressInLift(CGPoint(x: end.frame.minX + 12, y: end.frame.maxY - 12))
-                    XCTAssertTrue(menuItem("拷贝").waitForExistence(timeout: 5), "the menu again")
-                }
-                menuItem("拷贝").tap()
+                // Quote (引用) is the menu's first item; at the largest text size its row showed 拷贝 first.
+                let items = editMenuItems("bottom" + tag)
+                XCTAssertTrue(items.all.contains("引用"), "\(tag): 引用 is in the edit menu: row \(items.row), all \(items.all)")
+                let copy = [app.menuItems["拷贝"].firstMatch, app.buttons["拷贝"].firstMatch].first { $0.exists && $0.isHittable }
+                XCTAssertNotNil(copy, "拷贝 is still in the menu")
+                copy?.tap()
                 XCTAssertTrue(app.textViews["lift-text"].waitForNonExistence(timeout: 3), "拷贝 put the answer back")
 
                 liftTheLongAnswerAtItsEnd()
