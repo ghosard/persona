@@ -136,6 +136,12 @@ func (c *conversation) newBoundRun(task, delegation string, gen int) *voiceRun {
 // message is what goes to the bound conversation for task: an agent gets voice/agent_message, Persona's own
 // conversations voice/delegated.
 func (c *conversation) message(task string, recent []prompts.VoiceLine) string {
+	if c.meeting != nil {
+		// The room gets the question's text only, as …/ask sends a spoken one
+		// (docs/assistant/meeting-minutes.md "Asking the room"): its own rules say how it answers, and the call's lines
+		// are not the room's to keep.
+		return task
+	}
 	l := string(c.language())
 	if c.target.Kind == "agent" {
 		return prompts.RenderVoiceAgentMessage(prompts.VoiceAgentMessage{Lang: l, Task: task, History: recent})

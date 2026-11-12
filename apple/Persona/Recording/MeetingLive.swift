@@ -41,7 +41,7 @@ final class MeetingLive {
         var settled: (RecordingEntry) -> Bool
         /// The hub needs the upload first, even if this phone thinks it was stored (`RecordingSync.reupload`).
         var upload: (UUID) -> Void
-        /// The stretch Persona is saying now (`MeetingSpeaker.openSpan`).
+        /// The stretch Persona is saying now (`MeetingSpeaker.openSpan`, or the meeting call's voice: `MeetingCall.openSpan`).
         var openSpan: (UUID) -> RecordingSpan?
         var wait: (Duration) async -> Void
         /// Every `200` of `…/live`: the meeting conversation keeps what it says of the room (`MeetingConversation.applyLive`)
@@ -209,7 +209,7 @@ extension MeetingLive.Deps {
              },
              settled: { RecordingSync.shared.attendanceSettled($0) },
              upload: { RecordingSync.shared.reupload($0) },
-             openSpan: { MeetingSpeaker.shared.openSpan(for: $0) },
+             openSpan: { MeetingSpeaker.shared.openSpan(for: $0) ?? MeetingCall.shared.openSpan(for: $0) },
              wait: { try? await Task.sleep(for: $0) },
              report: { id, answer in
                  MeetingConversation.shared.applyLive(id, room: answer.room, privateMark: answer.privateMark, followup: answer.followup)

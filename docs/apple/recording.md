@@ -118,7 +118,7 @@ The hub writes minutes for a meeting recording once its text is complete (#2710;
 
 ## Persona in meetings
 
-Persona can attend a meeting being recorded on the iPhone (#2981; the iPhone side is #3375). The contract, with every field and error, is [meeting-minutes.md](../assistant/meeting-minutes.md) "Attending a meeting"; this is what the app does with it. Only a hub that lists the `meeting_attendance` feature gets any of it: with another hub the Recordings page, the upload and the Live Activity are exactly as before. The redesign (#3862) replaces the attending session with the meeting's own room conversation and a meeting page, on a hub that lists `meeting_conversation`: [meeting-minutes.md](../assistant/meeting-minutes.md) "Meeting conversation (#3862)". The iPhone does phase 1 of it, phase 3, photos, and phase 6, talking about any recording ("The meeting conversation (#3862)" below); a meeting started on a hub without it, or before the hub listed it, keeps everything this section describes.
+Persona can attend a meeting being recorded on the iPhone (#2981; the iPhone side is #3375). The contract, with every field and error, is [meeting-minutes.md](../assistant/meeting-minutes.md) "Attending a meeting"; this is what the app does with it. Only a hub that lists the `meeting_attendance` feature gets any of it: with another hub the Recordings page, the upload and the Live Activity are exactly as before. The redesign (#3862) replaces the attending session with the meeting's own room conversation and a meeting page, on a hub that lists `meeting_conversation`: [meeting-minutes.md](../assistant/meeting-minutes.md) "Meeting conversation (#3862)". The iPhone does phase 1 of it, phase 2, the live view, phase 3, photos, phase 4, realtime voice, and phase 6, talking about any recording ("The meeting conversation (#3862)" below); a meeting started on a hub without it, or before the hub listed it, keeps everything this section describes.
 
 - **Role, chosen as the recording starts**: **Off** (the hub writes the minutes after the meeting, as before), **Listen** (Persona follows the meeting; answers show on screen only), or **Take Part** (they are also said aloud). The Recordings page shows the choice under **Record** for a meeting (`RecordingCaptureControls.personaRow`), pre-selected from the hub's `meeting_attendance_default`, which **Settings › Meetings** changes (`MeetingSettingsView`, `PUT /api/v1/assistant`). A pick on the page is for that one recording. The drawer, the home screen's menu, the Control, Siri and the Action button start with the default and the session picked last unless that was the main chat, else with Persona off, so they stay one tap (never the main chat by default, #3862); the last word from the hub (whether it offers attending, its default) is kept for a start without the app in front (`MeetingAttendanceDefaults`).
 - **Who attends**: one session per recording (`MeetingAttendees`): the main chat (sent by leaving `attending_session` out), Persona's other open chats, or an Agent that takes messages; never one the hub would refuse ("Sessions that never attend": a work computer's, another manager's, the health space's, a chat whose replies leave the apps or that an extension opened, one in `bypassPermissions`). The one picked last is pre-selected while it can still attend, unless it was the main chat: the main chat attends only when picked for that meeting (`RecordingAttendance.mainPicked`; owner decision in #3862, since every line fed to a chat fills its context). With nobody chosen the role shows Off; Listen or Take Part shows Who Attends: Choose with "Choose who attends. Until then Persona stays out of the meeting.", a start without a choice starts with Persona off, the picker never pre-selects the main chat, and turning Persona on mid-meeting (the strip's Turn on Persona or its role menu; `MeetingRecorder.setRole` returns false) opens the picker first and turns on once someone is picked. The upload holds it whatever built the attendance: an attending role with no session named and the main chat not picked goes as `off` (`RecordingAttendance.sentRole`, which the stored mark, live lines and asks follow too), so `attending_session` is never left out by default. Kept on the recording as `RecordingEntry.attendance` (`RecordingAttendance`), on this phone only.
@@ -418,6 +418,96 @@ see it in the thread at once, then "Used as material", then the room's note on w
   (the photos revision kept only once its read applied; a start takes photos only when the hello listed
   `meeting_photos` with the conversation), `MeetingRecordingTests` (a minutes item citing a photo) and
   `MeetingThreadTests` (photo entries, the withdrawn line, the end batch).
+
+#### Realtime voice (phase 4)
+
+The contract's "Phase 4: realtime voice in the meeting" ([meeting-minutes.md](../assistant/meeting-minutes.md)): Talk to
+Persona by voice during a room meeting, with no hub flag of its own. The voice extension says it takes meeting calls with
+`meeting` in its `GET /info` features (`VoiceMeeting.feature`; `VoiceSupport` asks, at most once a minute). The Talk button
+and its states are in [DESIGN_SYSTEM.md](../design/DESIGN_SYSTEM.md) "Meeting page (#3862)", the Live Activity's in
+[live-activity.md](live-activity.md) "Recording". The pure rules are `MeetingTalkRules.swift`, the call and Talk
+`MeetingCall`, the audio `MeetingCallAudio`.
+
+- **Who has a call** (`MeetingCallRule.wanted`): a room meeting this phone records, Persona taking part (`participant`,
+  from the start or a later change), the hub took the room (`MeetingAsk.canAsk`: not `RecordingSync.roomMissing`), the
+  room `ready` with its ids (`MeetingConversation.roomKey`), and a voice extension that runs, speaks protocol 2, is set up
+  and lists `meeting` (`MeetingCallRule.extensionID`). `MeetingCall` follows the recording, its role, the room and
+  `VoiceSupport` with `withObservationTracking` (as `RecordingActivity` does) and starts or ends the call as they change.
+- **The call** is a `VoiceConversation` in meeting mode (`VoiceMeeting`): protocol 2 `start` with `mode: "meeting"`,
+  `recording_id` (lowercase), `target` the room's key, `echo_cancellation` (`RecordingCapture.cancelsEcho`), the model and
+  voice as any call has them, no `recent` (the extension reads the room's own turns); `history` and `resume` on a
+  reconnect, as protocol 2 has them. A `ready` without `meeting` ends it (`incompatible`): an ordinary call bound to the room
+  would put its tools in front of the room. It is not a phone call: it never claims the microphone
+  (`RecordingMicrophone`: the recording holds it), keeps no screen on, never ends after 10 idle minutes, and isn't ended
+  by the background (it is not one of `VoiceCalls`). It reconnects 1, 4 and 10 seconds after a drop, then every 30 seconds
+  (`VoiceMeeting.retryEvery`) for as long as the meeting records; a call that ended by itself (a fatal `not_meeting_room`,
+  a refused handshake but 401 and 403) starts again 30 seconds later while the meeting wants one, unless the end says it
+  never can (`MeetingCallRule.retries`: 401, 403, `incompatible`, a model that can't be used). It ends with Stop
+  (`RecordingCapture.onStopping` → `MeetingCall.ended`), another role, the room going, or the extension no longer listing
+  `meeting`. While the recording is paused (by the owner or a call) its socket stays and nothing plays: the player stops
+  with the recorder's engine.
+- **One capture** (`MeetingCallAudio`, the `VoiceAudio` of a meeting call): the recorder's one input tap, already at 16 kHz,
+  feeds the segment writer and, through `RecordingCapture.listen` (`RecordingSegmentWriter.listener`, called on the tap's
+  thread), `MeetingTalkTap`, which hands the call's uplink PCM16 and keeps the newest buffer's level for the talk window.
+  The uplink of a meeting call is gated (`VoiceUplink(gated: true)`): nothing is held before `ready`, nothing goes outside a
+  span, and the `talk` frame goes under the uplink's lock (`VoiceUplink.talk`), so on the socket no buffer of a span is
+  before its `talk on` or after its `talk off`. The voice plays through a player node on the recorder's own engine
+  (`RecordingCapture.callPlayer`, attached before the engine first starts for every room meeting, `callFormat` 24 kHz mono
+  float, a call at another rate resampled), behind the phone call's jitter buffer (`VoicePlayout`), so the system's echo
+  cancellation takes it out of the microphone. A recording of any other kind gets no player and no listener: notes,
+  all-day and rolling recordings, #3746 meetings and the watch are as they were.
+- **Echo** (`MeetingRecorder.echoCancellation`): a room meeting that starts as `participant` asks for voice processing on
+  the recorder's input as recording starts (`RecordingCapture.start(…, echoCancellation:)`,
+  `RecordingSegmentWriter.voiceProcessing`), and never switches it while it records, whatever the role does later; where it
+  won't turn on, or the engine won't start with it, the recording goes on without (as the phone call's audio does), and
+  `echo_cancellation` says `false`. Not on the simulator, where voice processing doesn't run (docs/assistant/voice.md 6.4).
+  Either way every stretch the call's voice plays in, half a second wider each side (`RecordingSpan.widened`,
+  `echoMargin`), joins `RecordingAttendance.spoken`, so a sentence at least half inside one leaves the transcript, the
+  upload and the live log, as #2981 has it for spoken answers; one transcribed while the voice still plays is checked
+  against the open stretch (`MeetingCall.openSpan`, beside `MeetingSpeaker.openSpan`).
+- **Talk** (`MeetingCall.beginTalk` / `endTalk`): offered while a room meeting Persona can be asked in records
+  (`MeetingCallRule.talkOffered`, listener or participant, not paused). Held on the page; on the Lock Screen and in the
+  island a tap opens a talk window (`TalkInMeetingIntent`, `MeetingCall.toggleWindow`), which ends on another tap, on 2
+  seconds of silence after speech, after 20 seconds without speech or after 60 seconds (`MeetingTalkWindow`, ticking every
+  100 ms on the tap's level; a buffer at -40 dBFS or louder is speech). A span opening stops what Persona is saying (the
+  call's voice, a spoken answer). With the call live, the span is `talk on`, its audio, `talk off`; the call's answer comes
+  as captions and its voice, and in the room's thread as the room's turn. Without it (a listener, no `meeting`, the call
+  connecting, reconnecting or down), the segment is cut at the span's start and end (`RecordingCapture.flushSegment`), the
+  span is transcribed on the phone as every segment is, and once its segments have their text (at most 12 s) the
+  sentences at least half inside it (`MeetingTalkWords.question`) go as a spoken question: `…/ask` with `question` and
+  `spoken: true` (`MeetingAsk.ask(_:text:spoken:)`), answered as any ask (aloud for a participant, `MeetingSpeaker`). Let
+  go in under half a second, the page says to hold Talk while speaking; a span asked without the call that held no words
+  says Persona heard nothing. A span closes with the recording's pause or the role going off (what was said is still
+  asked); Stop drops it.
+- **Typed questions** go as the call's `text` frame while it is live (`MeetingCall.say`; the fast layer hands them to the
+  room, and the answer comes in the room's thread), otherwise through `…/ask` as before; the room's one-question-at-a-time
+  rule is the asks', not the call's.
+- **The privacy texts**: where Talk sends its spans to the voice service, a room meeting taking part on a hub whose voice
+  extension takes meeting calls (`MeetingCallRule.talkSendsAudio`), the line under Record and Talk's first-use note (and
+  its spoken hint) say "Audio stays on this iPhone, except while you hold Talk: what is said then goes to the voice
+  service." (the contract's Wording). The note shows under the composer until the first span went to the call
+  (`MeetingTalkPrivacy`, written once). Everywhere else the texts are as before: a listener's Talk stays on the phone.
+- **No voice in a room opened as a chat**: a conversation whose origin is `meeting` offers no Voice Chat
+  (`VoiceAvailability.meetingRoom`; the + menu's item says to hold Talk on the meeting's page), since the extension refuses
+  an ordinary call bound to a room (`meeting_room`).
+- **What the simulator cannot verify**: voice processing (it doesn't run there), how much it changes the recording of a
+  room's far voices, and the voice's echo through the loudspeaker; measure on a device before relying on the drop rule alone.
+- **Screenshots and tests**: the room samples (`-showMeetingSample room-listening|room-taking-part|room-whiteboard`) feed
+  canned audio into the recorder's tap (`RecordingCapture.feedSample`: 3 s of a hum, 2 s of quiet), so Talk has something
+  to send with no microphone; a span asked without the call gets made-up words as its transcript
+  (`RecordingSamples.transcribeTalkSample`). `room-talk-held` is `room-taking-part` with Talk held for 10 seconds once the
+  call is up. The room samples show Talk's first-use note again. The mock hub with `MOCK_VOICE=1` serves meeting calls
+  (`scripts/mock/voice_meeting_mock.py`: `meeting` in the features, the start checked against its room, audio counted
+  inside and outside spans, an answer after each span in the room's thread; `GET /mock/voice_meeting`, `?meeting=off` an
+  extension from before phase 4). UI tests `MeetingTalkUITests` (a held Talk reaches the call inside its span only and its
+  answer the thread; Talk held and the Lock Screen's talk window; a listener's Talk asked through `…/ask` as `spoken`; the
+  start's privacy line with and without meeting calls; shots `talk-<appearance>-page|speaking|answered|held|lock-before|lock|listener-asked|start`).
+  `MeetingConversationUITests` and `MeetingLiveViewUITests` switch the mock's meeting calls off, so their questions keep
+  going through `…/ask`. Unit tests `MeetingCallTests` (who has a call, the extension's feature, where Talk is and where it
+  sends audio, which ends start again, the start frame, the talk frames, a `ready` without `meeting`, only the span's
+  audio going up and in order, a drop ending the span, the tap's PCM16 and level, reconnecting every 30 s, no idle end, the
+  talk window's four ends, the span's words, a spoken ask on the wire, the voice's stretch leaving the transcript, the Live
+  Activity's Talk, no voice in a room opened as a chat).
 
 ## All-day recording (Apple)
 

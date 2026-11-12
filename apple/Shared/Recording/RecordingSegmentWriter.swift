@@ -126,6 +126,7 @@ nonisolated final class RecordingSegmentWriter: @unchecked Sendable {
         var running = false
         var failure: String?
         var segmentFrames = AVAudioFramePosition(RecordingAudioSpec.segmentSeconds * RecordingAudioSpec.sampleRate)
+        var listener: (@Sendable (AVAudioPCMBuffer) -> Void)?
     }
     private let shared = OSAllocatedUnfairLock(initialState: Shared())
     private var converter: AVAudioConverter?
@@ -143,6 +144,25 @@ nonisolated final class RecordingSegmentWriter: @unchecked Sendable {
     /// cut, followed by the audio of the continue. Other recordings keep their files across such gaps, on a timeline
     /// without them. Set before `start()`.
     var cutsAtGaps = false
+    /// A room meeting (#3862 phase 4): the engine carries a player for the meeting call's voice (`callPlayer`), at this
+    /// format, so the voice plays through the same I/O as the microphone and voice processing can take it out. Set before
+    /// `start()`; nil (every other recording): no player and no output, as before.
+    var callPlayerFormat: AVAudioFormat?
+    /// A meeting that starts taking part (#3862 phase 4): the input runs with voice processing, the system's echo
+    /// cancellation, from the start to the end (never switched while it records). Set before `start()`; where it will not
+    /// turn on or the engine will not start with it, plain capture (`cancelsEcho` false). iOS only.
+    var voiceProcessing = false
+    /// Voice processing is on (`voiceProcessing` asked for it and it runs).
+    private(set) var cancelsEcho = false
+    /// The meeting call's player (`callPlayerFormat`), attached once at the start; nil otherwise.
+    private(set) var callPlayer: AVAudioPlayerNode?
+
+    /// Hears every converted buffer (16 kHz mono float) besides the file, on the tap's thread (#3862 phase 4: a meeting's
+    /// Talk spans and the talk window's silence). Cheap work only; nil: nobody listens. Set at any time.
+    var listener: (@Sendable (AVAudioPCMBuffer) -> Void)? {
+        get { shared.withLock { $0.listener } }
+        set { shared.withLock { $0.listener = newValue } }
+    }
 
     init(directory: URL, firstIndex: Int = 0, startOffset: Double = 0, allocateSeq: (@Sendable (_ directory: URL) -> Int?)? = nil) {
         self.directory = directory
@@ -194,12 +214,58 @@ nonisolated final class RecordingSegmentWriter: @unchecked Sendable {
 
     func start() throws {
         try FileManager.default.createDirectory(at: queue.sync { directory }, withIntermediateDirectories: true)
+        // Before the formats are read: voice processing changes the input node's format.
+        if voiceProcessing { enableVoiceProcessing() }
+        attachCallPlayer()
         try installTap()
         engine.prepare()
         noteOpening()
-        do { try engine.start() } catch { removeTap(); throw error }
+        do {
+            try engine.start()
+        } catch where cancelsEcho {
+            // Voice processing that turns on and then will not let the engine start: plain capture, as the voice call does.
+            removeTap()
+            engine.stop()
+            disableVoiceProcessing()
+            try installTap()
+            engine.prepare()
+            do { try engine.start() } catch { removeTap(); throw error }
+        } catch {
+            removeTap(); throw error
+        }
         shared.withLock { $0.running = true }
     }
+
+    private func enableVoiceProcessing() {
+        #if os(iOS)
+        do {
+            try engine.inputNode.setVoiceProcessingEnabled(true)
+            cancelsEcho = true
+        } catch {
+            Self.log.notice("recording: no voice processing, recording without echo cancellation: \(error.localizedDescription, privacy: .public)")
+        }
+        #endif
+    }
+
+    private func disableVoiceProcessing() {
+        #if os(iOS)
+        Self.log.notice("recording: the engine would not start with voice processing, recording without echo cancellation")
+        try? engine.inputNode.setVoiceProcessingEnabled(false)
+        cancelsEcho = false
+        #endif
+    }
+
+    /// The meeting call's player, into the engine's mixer: attached before the engine first starts, so the output joins
+    /// the graph once and a call starting later changes nothing that runs.
+    private func attachCallPlayer() {
+        guard let format = callPlayerFormat, callPlayer == nil else { return }
+        let player = AVAudioPlayerNode()
+        engine.attach(player)
+        engine.connect(player, to: engine.mainMixerNode, format: format)
+        callPlayer = player
+    }
+
+    private static let log = Logger(subsystem: "persona", category: "recording")
 
     func pause() {
         engine.pause()
@@ -353,10 +419,13 @@ nonisolated final class RecordingSegmentWriter: @unchecked Sendable {
         guard error == nil, out.frameLength > 0 else { return }
         let level = Self.level(of: out)
         let frames = AVAudioFramePosition(out.frameLength)
-        shared.withLock {
+        let listener = shared.withLock {
             $0.frames += frames
             $0.level = $0.level * 0.6 + level * 0.4
+            return $0.listener
         }
+        // Read only (the writer's queue gets the same buffer): the listener copies what it keeps.
+        listener?(out)
         let box = BufferBox(buffer: out)
         queue.async { [weak self] in self?.write(box.buffer, startedAt: startedAt) }
     }

@@ -59,6 +59,9 @@ type conversation struct {
 	resume  []resumeRun
 	resumed bool // the app picked the call up again: its first session is told what was said
 	wake    chan struct{}
+	// meeting: a meeting call (meeting.go), set by negotiate before anything else runs; nil for any other. Its fields
+	// are under mu.
+	meeting *meetingCall
 
 	mu         sync.Mutex
 	closed     bool
@@ -141,6 +144,8 @@ type conversation struct {
 	// over or called a function (nudge.go).
 	owed    owedAnswer
 	modelAt time.Time
+	// talkIgnored: a talk frame came on a call that is not a meeting call, and was logged (meeting.go).
+	talkIgnored bool
 }
 
 type outFrame struct {
@@ -195,6 +200,9 @@ func (pl *Plugin) converse(ctx context.Context, app *websocket.Conn, role string
 			c.failCode(upstreamCode(err), "语音会话没能建立："+err.Error(), true)
 		}
 		return
+	}
+	if c.meeting != nil {
+		go c.feedSilence(silenceTick) // between Talk spans the upstream hears silence (meeting.go)
 	}
 	c.readApp()
 }
@@ -312,6 +320,12 @@ func (c *conversation) negotiate(s *startFrame) error {
 	if s.Target != nil && !full {
 		return &codedError{code: codeTargetForbidden, msg: "别的扩展调来的语音只能交给 Persona 主对话，不能绑定对话"}
 	}
+	meeting := s.Mode == modeMeeting
+	if meeting && (!full || s.Protocol < 2 || s.Target == nil || s.Target.MachineID == "" || s.Target.SessionID == "" ||
+		s.RecordingID == "") {
+		// A meeting call is protocol 2, bound to a recording's room: without them it cannot be checked to be one.
+		return &codedError{code: codeNotMeetingRoom, msg: i18n.T(c.language(), "voice-meeting.not_meeting_room")}
+	}
 	if s.Protocol < 2 || !full {
 		return nil // protocol 1: its frames, the main conversation
 	}
@@ -320,8 +334,14 @@ func (c *conversation) negotiate(s *startFrame) error {
 	}
 	c.version = 2
 	machine, session, recent := s.Target.MachineID, s.Target.SessionID, appRecent(c.language(), s.Recent)
+	recording := ""
+	if meeting {
+		// The snapshot is the room's own turns, read from it: the app's recent may hold lines the room must not know
+		// (the meeting page shows Just me beside the room).
+		c.meeting, recording, recent = &meetingCall{recording: s.RecordingID}, s.RecordingID, nil
+	}
 	c.prep = make(chan prepared, 1)
-	go func() { c.prep <- c.prepare(c.ctx, machine, session, recent) }()
+	go func() { c.prep <- c.prepare(c.ctx, machine, session, recent, recording) }()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, l := range historyOf(s.History) {
@@ -441,7 +461,7 @@ func (c *conversation) shutdown() {
 	}
 	c.closed = true
 	up, w := c.up, c.w
-	lines := callLines{user: c.userSeq, model: c.asstSeq, pauses: c.sus.pauses}
+	lines := callLines{user: c.userSeq, model: c.asstSeq, pauses: c.sus.pauses, meeting: c.meeting.meetingLog()}
 	for id, t := range c.pending {
 		t.Stop()
 		delete(c.pending, id)

@@ -75,6 +75,28 @@ struct AskPersonaInMeetingIntent: LiveActivityIntent {
     }
 }
 
+/// The recording activity's Talk, in a room meeting Persona can be asked in (#3862 phase 4): its buttons can't be held, so
+/// a tap opens a talk window, which ends on another tap, 2 seconds of silence after speech, 20 seconds without speech or
+/// 60 seconds. With the meeting call live what is said then goes to the voice service; without it the phone transcribes
+/// it and asks the room. From the Lock Screen too, without unlocking, as Ask is.
+struct TalkInMeetingIntent: LiveActivityIntent {
+    nonisolated static let title: LocalizedStringResource = "Talk to Persona in the Meeting"
+    nonisolated static let isDiscoverable = false
+    nonisolated static var authenticationPolicy: IntentAuthenticationPolicy { .alwaysAllowed }
+
+    @Parameter(title: "Recording") var recordingID: String?
+
+    nonisolated init() {}
+    nonisolated init(recordingID: String?) { self.recordingID = recordingID }
+
+    nonisolated func perform() async throws -> some IntentResult {
+        #if !WIDGET_EXTENSION
+        await MeetingRecorder.shared.talk(recordingID: recordingID)
+        #endif
+        return .result()
+    }
+}
+
 /// The recording activity's Turn Off (#2981): Persona stops attending the meeting; the recording goes on.
 struct TurnOffMeetingAttendanceIntent: LiveActivityIntent {
     nonisolated static let title: LocalizedStringResource = "Turn Off Persona in the Meeting"

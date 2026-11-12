@@ -60,10 +60,12 @@ import OSLog
         let answered = MeetingAsk.shared.exchanges(for: id).last(where: { $0.answer != nil })
         if let answered, answerSeen?.id != answered.id { answerSeen = (answered.id, now) }
         let topic = entry.attendance?.liveView == true ? MeetingTopic.current(MeetingConversation.shared.meeting(id).topics)?.title : nil
+        // Talk (#3862 phase 4): whether a span is open, read here so the activity follows it at once.
+        let talking = MeetingCall.shared.talk?.recording == id
         let content = Self.content(entry: entry, recording: state == .recording, interrupted: interrupted,
                                    elapsed: capture.timeline, previous: previous, now: now,
                                    answer: answered?.answer, answeredAt: answered == nil ? nil : answerSeen?.at,
-                                   topic: topic, roomMissing: roomMissing)
+                                   topic: topic, roomMissing: roomMissing, talking: talking)
         // The answer gives way to the latest line 60 s after it came: looked at again then.
         if content.answer != nil, entry.attendance?.liveView == true, let at = answerSeen?.at,
            at.addingTimeInterval(Self.answerShown) > now {
@@ -105,9 +107,13 @@ import OSLog
     /// With the live view (#3862 phase 2, `RecordingAttendance.liveView`) and Persona attending, `topic` (the room's
     /// current one) and the live log's latest line come too, and the third line is the answer (`answeredAt`: when it came)
     /// for 60 s, then the latest line; without a line yet the answer stays, as it always does without the live view.
+    ///
+    /// A room meeting Persona can be asked in has Talk (#3862 phase 4, `MeetingCallRule.talkOffered`): `talking` false,
+    /// or true while a span is open (`talking`), which the Lock Screen says ("Listening to you…") in place of the third
+    /// line; every other recording has nil, and Ask Persona as before.
     nonisolated static func content(entry: RecordingEntry, recording: Bool, interrupted: Bool, elapsed: Double,
                                     previous: Content?, now: Date, answer: String? = nil, answeredAt: Date? = nil,
-                                    topic: String? = nil, roomMissing: Bool = false) -> Content {
+                                    topic: String? = nil, roomMissing: Bool = false, talking: Bool = false) -> Content {
         let phase: Content.Phase = recording ? .recording : interrupted ? .interrupted : .paused
         let keep = recording && previous?.phase == .recording
         let since = recording ? (keep ? previous?.runningSince : nil) ?? now.timeIntervalSince1970 - elapsed : nil
@@ -122,7 +128,8 @@ import OSLog
                        persona: attended ? entry.attendance?.role.rawValue : nil,
                        answer: showsAnswer ? answer : nil,
                        topic: liveView ? Self.cut(topic, Self.topicLength) : nil,
-                       line: showsAnswer ? nil : line)
+                       line: showsAnswer ? nil : line,
+                       talking: MeetingCallRule.talkOffered(entry, roomMissing: roomMissing) ? recording && talking : nil)
     }
 
     /// How long to hold `next` back when `shown` went out at `sentAt` (pure, for the tests): an answer, a phase, the

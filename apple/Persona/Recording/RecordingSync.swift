@@ -498,7 +498,7 @@ final class RecordingSync {
         var body = RecordingUpload(entry)
         #if os(iOS)
         // Persona is saying an answer in this meeting right now: what the microphone hears of it isn't the meeting's.
-        if let open = MeetingSpeaker.shared.openSpan(for: entry.id) {
+        if let open = MeetingSpeaker.shared.openSpan(for: entry.id) ?? MeetingCall.shared.openSpan(for: entry.id) {
             body.segments.removeAll { open.holds(RecordingSentence(start: $0.start, end: $0.end, text: $0.text)) }
         }
         #endif

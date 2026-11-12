@@ -22,6 +22,12 @@ import SwiftUI
 /// the page scrolls (`notice`), and with the field as its spoken hint; so do picked photos that couldn't be read
 /// (`photoNotice`).
 ///
+/// **Talk** (#3862 phase 4) takes send's place while the field is empty and Persona can be asked (any role that attends):
+/// held while the owner speaks, to the meeting call when it is live, else asked without it. Not with Just Me on (Talk is
+/// the room's), and not after the meeting. While it is held the caption over the controls says Persona hears; where the
+/// call sends the span to the voice service, the caption says so until the first span went (the contract's Wording).
+/// A typed question goes as the call's `text` frame while the call is live, else through `…/ask`.
+///
 /// Stop asks first, as the live sheet's bar does: a stopped recording cannot be continued.
 struct MeetingPageBar: View {
     var entry: RecordingEntry
@@ -56,6 +62,8 @@ struct MeetingPageBar: View {
     @State private var ask = MeetingAsk.shared
     @State private var conversation = MeetingConversation.shared
     @State private var sync = RecordingSync.shared
+    /// The meeting call and Talk (#3862 phase 4).
+    @State private var call = MeetingCall.shared
     /// Read for one thing only: how many of the last pick couldn't be read.
     @State private var photos = MeetingPhotos.shared
     @State private var draft = ""
@@ -93,8 +101,9 @@ struct MeetingPageBar: View {
     private var canSend: Bool {
         guard MeetingAsk.hasWords(draft), !overLong else { return false }
         switch target {
-        // One question at a time, deliberately stricter than the hub's two: an answer sits next to its question.
-        case .room: return MeetingAsk.canAsk(entry, roomMissing: roomMissing) && !ask.busy
+        // One question at a time, deliberately stricter than the hub's two: an answer sits next to its question. The
+        // meeting call takes a question whenever it is live (the fast layer hands it to the room).
+        case .room: return MeetingAsk.canAsk(entry, roomMissing: roomMissing) && (call.isLive(entry.id) || !ask.busy)
         // Just Me needs only a meeting that records; it never waits on the room's question.
         case .justMe: return entry.active
         case .followup: return hold == nil
@@ -105,12 +114,15 @@ struct MeetingPageBar: View {
         VStack(alignment: .leading, spacing: Theme.Space.s) {
             if mode == .live, !size.isAccessibilitySize { justMeRow }
             MeetingQuestionField(text: $draft, focus: focus, placeholder: placeholder, sendLabel: String(localized: "Send"),
-                                 canSend: canSend, disabled: fieldDisabled, largeTypeHint: blocked ?? "", send: send) {
+                                 canSend: canSend, disabled: fieldDisabled, largeTypeHint: blocked ?? "", showsInstead: showsTalk,
+                                 send: send) {
                 plus
                 voiceButton
             } under: {
                 if mode == .live, !writing { largeControls }
                 voiceButton
+            } instead: {
+                talkButton
             }
             if let caption {
                 Text(caption).font(Theme.Font.caption).foregroundStyle(.secondary)
@@ -197,12 +209,58 @@ struct MeetingPageBar: View {
         }
     }
 
-    /// The caption under the field: why it takes no words (at accessibility sizes the page shows that), or that the words
-    /// are too many to send.
+    /// The caption under the field: why it takes no words (at accessibility sizes the page shows that), that the words
+    /// are too many to send, or Talk's (#3862 phase 4): Persona hears while it is held, a word after a span, and where a
+    /// span goes to the voice service, that it does, until the first one went.
     private var caption: String? {
         if !size.isAccessibilitySize, let blocked { return blocked }
-        guard overLong else { return nil }
-        return String(localized: "Too long to send. Shorten it to \(MeetingConversation.maxText.formatted()) characters.")
+        if overLong { return String(localized: "Too long to send. Shorten it to \(MeetingConversation.maxText.formatted()) characters.") }
+        return talkCaption
+    }
+
+    // MARK: Talk
+
+    /// Talk stands in send's place: live, asking the room, Persona can be asked now, nothing typed.
+    private var showsTalk: Bool { mode == .live && target == .room && call.canTalk(entry) && !MeetingAsk.hasWords(draft) }
+
+    /// A span from this page is open.
+    private var talking: Bool { call.talk?.recording == entry.id }
+
+    /// The span goes to the voice service (the meeting call is live) rather than staying on the phone.
+    private var talkSendsAudio: Bool { call.isLive(entry.id) }
+
+    private var talkButton: some View {
+        MeetingTalkButton(held: talking, hint: talkSendsAudio ? Self.talkPrivacy : String(localized: "Hold while you speak. Persona answers when you let go."),
+                          press: { startTalk() }, release: { call.endTalk() }, window: { call.toggleWindow(entry.id) })
+    }
+
+    /// What the caption says about Talk now, if anything.
+    private var talkCaption: String? {
+        guard mode == .live, target == .room else { return nil }
+        if let talk = call.talk, talk.recording == entry.id {
+            // A window (the Lock Screen's tap, or VoiceOver) ends on a tap; a hold when the finger lifts.
+            return talk.window ? String(localized: "Listening to you… Tap Talk when you’re done.")
+                : String(localized: "Listening to you… Let go when you’re done.")
+        }
+        switch call.note {
+        case .nothingHeard?: return String(localized: "Persona didn’t hear anything. Hold Talk while you speak.")
+        case .holdLonger?: return String(localized: "Hold Talk while you speak, then let go.")
+        case nil: break
+        }
+        guard showsTalk, talkSendsAudio, !call.privacySeen else { return nil }
+        return Self.talkPrivacy
+    }
+
+    /// The contract's Wording for privacy mode (#3862 phase 4), where Talk sends its spans to the voice service.
+    static var talkPrivacy: String {
+        String(localized: "Audio stays on this iPhone, except while you hold Talk: what is said then goes to the voice service.")
+    }
+
+    private func startTalk() {
+        focus.wrappedValue = false
+        guard call.beginTalk(entry.id, window: false) else { return }
+        Haptics.tap()
+        AccessibilityNotification.Announcement(String(localized: "Listening to you…")).post()
     }
 
     /// [+]: what else the composer can send: photos for the meeting's material (a meeting that takes them), and the
@@ -353,7 +411,8 @@ struct MeetingPageBar: View {
         let text = draft
         let sent: Bool
         switch target {
-        case .room: sent = ask.ask(entry, text: text) != nil
+        // While the meeting call is live the question is its `text` frame (#3862 phase 4); else an ask.
+        case .room: sent = call.say(text, recording: entry.id) || ask.ask(entry, text: text) != nil
         case .justMe: sent = conversation.sendJustMe(entry, text: text) != nil
         case .followup: sent = conversation.sendFollowup(entry.id, text: text) != nil
         }

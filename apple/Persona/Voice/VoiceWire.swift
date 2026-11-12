@@ -224,6 +224,10 @@ nonisolated enum VoiceErrorCode: Equatable, Sendable {
     case noUpstream, upstreamForbidden, upstreamUnavailable, upstreamFailed
     case targetGone, targetReadOnly, targetForbidden
     case machineOffline, modelUnavailable
+    /// A meeting call whose target is not that recording's room, or a room that isn't `ready` (#3862 phase 4).
+    case notMeetingRoom
+    /// An ordinary call bound to a room: a room takes only meeting calls (#3862 phase 4).
+    case meetingRoom
     case other(String)
 
     init(wire: String) {
@@ -237,6 +241,8 @@ nonisolated enum VoiceErrorCode: Equatable, Sendable {
         case "target_forbidden": self = .targetForbidden
         case "machine_offline": self = .machineOffline
         case "model_unavailable": self = .modelUnavailable
+        case "not_meeting_room": self = .notMeetingRoom
+        case "meeting_room": self = .meetingRoom
         default: self = .other(wire)
         }
     }
@@ -367,16 +373,30 @@ nonisolated struct VoiceStart: Equatable, Sendable {
     var resume: [VoiceRun] = []
     /// False: the microphone records without echo cancellation, so a caption of the user's may be the voice's own.
     var echoCancellation: Bool?
+    /// A meeting call (#3862 phase 4, docs/assistant/meeting-minutes.md「Phase 4: realtime voice in the meeting」):
+    /// `"meeting"`, with the recording whose room `target` is. nil for every other call.
+    var mode: String? = nil
+    var recordingID: String? = nil
+
+    /// The mode of a meeting call: bound to the recording's room, hearing only Talk spans.
+    static let meetingMode = "meeting"
 }
 
 /// Text frames the app sends.
 nonisolated enum VoiceMessage {
     static func start(_ s: VoiceStart) -> String {
         encode(StartFrame(model: nonEmpty(s.model), voice: nonEmpty(s.voice), protocolVersion: s.protocolVersion,
+                          mode: nonEmpty(s.mode), recordingID: nonEmpty(s.recordingID),
                           target: s.target.map { TargetFrame(machineID: $0.machineID, sessionID: $0.sessionID) },
                           recent: s.recent.isEmpty ? nil : s.recent, history: s.history.isEmpty ? nil : s.history,
                           resume: s.resume.isEmpty ? nil : ResumeFrame(runs: s.resume.map(ResumeRun.init)),
                           echoCancellation: s.echoCancellation))
+    }
+
+    /// A meeting call's Talk span opens (`true`) or closes (#3862 phase 4): the app sends the microphone's audio only
+    /// between the two, and the extension feeds the upstream silence outside them whatever it receives.
+    static func talk(_ on: Bool) -> String {
+        encode(TalkFrame(on: on))
     }
 
     /// Stops what the voice is saying (not the agent).
@@ -414,6 +434,8 @@ nonisolated enum VoiceMessage {
         var model: String?
         var voice: String?
         var protocolVersion: Int
+        var mode: String?
+        var recordingID: String?
         var target: TargetFrame?
         var recent: [VoiceLine]?
         var history: [VoiceLine]?
@@ -421,10 +443,16 @@ nonisolated enum VoiceMessage {
         var echoCancellation: Bool?
 
         enum CodingKeys: String, CodingKey {
-            case type, model, voice, target, recent, history, resume
+            case type, model, voice, mode, target, recent, history, resume
             case protocolVersion = "protocol"
+            case recordingID = "recording_id"
             case echoCancellation = "echo_cancellation"
         }
+    }
+
+    private struct TalkFrame: Encodable {
+        let type = "talk"
+        var on: Bool
     }
 
     private struct TargetFrame: Encodable {
