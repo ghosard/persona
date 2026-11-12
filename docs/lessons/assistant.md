@@ -367,6 +367,17 @@ the only line between tool calls was English to a Chinese owner. The node now al
 (`midTurn`), asking for one sentence in the user's language before the next tool call, and the CLAUDE.md asks for the
 user's language in process text too.
 
+## A leader writes to an owner who has seen nothing else (#5842)
+
+Leaders spend most of their turns with the main chat, other leaders, scheduled runs and supervision messages (on one
+hub, 20 of the 70 messages a leader got in a day were the owner's), and they compact often. Their replies to the owner
+then carried that world along: plan item codes from their own files, shorthand from a compaction summary, "as we
+aligned today" about something settled in another conversation, and "approve it?" for a change the owner had not been
+shown. The owner could not follow and stopped trusting the replies. The CLAUDE.md now opens its interaction section
+with the rule that everything written for the owner (replies, cards, `notify_user`, `leader_progress`) assumes they
+have seen nothing else: plain names instead of codes, one sentence on where an unseen thing came from, and an approval
+only for something they were shown, with a link.
+
 ## A send whose answer came too late may have gone in (2026-11-12)
 
 The manager waits 90 s for a relayed message (`drainRelays`) and kept it queued when no answer came. The node had
