@@ -106,11 +106,20 @@ func TestGoldenVoicePrompts(t *testing.T) {
 		}
 	}
 	for name, set := range map[string][]string{"tools": toolNames, "tools.bound": boundTools, "tools.meeting": meetingTools} {
-		b, err := json.MarshalIndent(toolDecls(set), "", "  ")
+		b, err := json.MarshalIndent(toolDecls(set, name == "tools.meeting"), "", "  ")
 		if err != nil {
 			t.Fatal(err)
 		}
 		golden(t, name, string(b)+"\n")
+		if name != "tools.meeting" {
+			continue
+		}
+		// A meeting call reads no marks, and its instructions have no bound conversation's section to point to.
+		for _, not := range []string{"状态", "停止", "回答：", "绑定的对话」"} {
+			if strings.Contains(string(b), not) {
+				t.Errorf("tools.meeting has %q", not)
+			}
+		}
 	}
 }
 

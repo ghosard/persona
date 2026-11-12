@@ -54,6 +54,8 @@ final class MeetingTalkUITests: XCTestCase {
         try shot(app, "page")
         let answers = app.descendants(matching: .any).matching(identifier: "meeting-thread-answer")
         let before = answers.count
+        let caption = element(app, "meeting-ask-caption")
+        XCTAssertTrue(caption.exists && caption.label.contains("说话"), "Talk's first-use note isn't showing: \(caption.label)")
         talk.press(forDuration: 3)
 
         XCTAssertTrue(waitFor(15) { ((try? self.voice(hub))?["talk_off"] as? Int ?? 0) >= 1 }, "no talk off: \(String(describing: try? voice(hub)))")
@@ -70,10 +72,14 @@ final class MeetingTalkUITests: XCTestCase {
         if answers.count > before { reveal(answers.element(boundBy: answers.count - 1), in: app) }
         try shot(app, "answered")
         XCTAssertEqual((try voice(hub))["audio_out"] as? Int, 0, "nothing of the meeting after the span either")
+        // The note was shown as the span went to the voice service: it doesn't show again.
+        XCTAssertFalse(caption.exists && caption.label.contains("语音服务"), "the first-use note stayed: \(caption.label)")
     }
 
-    /// Talk held, as the page shows it (`room-talk-held` holds it for ten seconds once the call is up), then the Lock
-    /// Screen's Talk: a tap opens a talk window, which the Lock Screen says ("Listening to you…"), and another tap ends it.
+    /// Talk held, as the page shows it (`room-talk-held` holds it for ten seconds once the call is up, with the first-use
+    /// note under Talk, so the owner has been told), then the Lock Screen's Talk: a tap opens a talk window, which the Lock
+    /// Screen says ("Listening to you…"), and Done ends it. A Done tapped once the window has closed (by Done, or on its
+    /// own after 2 s of silence) opens no other span, and no audio ever reaches the call outside a span.
     @MainActor func testTalkHeldAndTheLockScreensTalkWindow() throws {
         let hub = try mockHub()
         let app = try meetingPage(hub, sample: "room-talk-held")
@@ -104,9 +110,18 @@ final class MeetingTalkUITests: XCTestCase {
             try screen("lock")
             XCTAssertTrue(open, "the Lock Screen never said Persona listens:\n\(springboard.debugDescription)")
             XCTAssertTrue(waitFor(10) { ((try? self.voice(hub))?["spans"] as? Int ?? 0) >= 2 }, "the window opened no span on the call")
+            // Done while the window is known to be open (the canned audio's quiet may close it first).
             let done = springboard.buttons["说完"].firstMatch
-            if done.waitForExistence(timeout: 5) { done.tap() }
+            if done.waitForExistence(timeout: 5), ((try? voice(hub))?["talking"] as? Bool) == true { done.tap() }
             XCTAssertTrue(waitFor(15) { ((try? self.voice(hub))?["talk_off"] as? Int ?? 0) >= 2 }, "the window never closed its span")
+            // The window is closed: a Done the Lock Screen may still show says so with its tap, and opens nothing.
+            if done.exists { done.tap() }
+            sleep(4)
+            let end = try voice(hub)
+            XCTAssertEqual(end["spans"] as? Int, 2, "a Done after the window closed opened another span: \(end)")
+            XCTAssertEqual(end["talking"] as? Bool, false, "a span stayed open: \(end)")
+            XCTAssertEqual(end["audio_out"] as? Int, 0, "audio reached the call outside its spans: \(end)")
+            XCTAssertGreaterThan(end["audio_in"] as? Int ?? 0, 0, "the spans' audio never reached the call")
         }
         // Unlock (swipe up; no passcode on the simulator): a locked simulator hangs the next test run.
         let bottom = springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.99))
@@ -131,6 +146,8 @@ final class MeetingTalkUITests: XCTestCase {
         XCTAssertEqual(asked["question"] as? String, "上次评审定的导出上限是多少？", "the span's words")
         let calls = try voice(hub)
         XCTAssertEqual(calls["calls"] as? Int ?? 0, 0, "a listener has no meeting call")
+        XCTAssertEqual(calls["audio_in"] as? Int ?? 0, 0, "a listener's Talk sent audio")
+        XCTAssertEqual(calls["audio_out"] as? Int ?? 0, 0)
         // The answer's row settles in the thread (it moves from the ask's card to the room's messages).
         sleep(3)
         try shot(app, "listener-asked")

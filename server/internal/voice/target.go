@@ -188,7 +188,7 @@ func (c *conversation) prepare(ctx context.Context, machine, session string, rec
 		wg.Wait()
 		return prepared{err: &codedError{code: codeTargetReadOnly, msg: "这个对话只能查看，不能用语音：" + sess.ReadOnlyReason}}
 	}
-	if recording == "" && sess.Origin == originMeeting {
+	if recording == "" && isMeetingRoom(sess) {
 		wg.Wait()
 		c.logf("bind %s/%s: a meeting's room takes only meeting calls", machine, session)
 		return prepared{err: &codedError{code: codeMeetingRoom, msg: i18n.T(c.language(), "voice-meeting.meeting_room")}}

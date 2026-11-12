@@ -152,7 +152,7 @@ struct RecordingSubtitle: View {
 /// attends (#2981) leads with Ask Persona (a tap asks about what was just said), and Bookmark, Turn Off (Persona stops
 /// attending) and Stop give up their words for their marks so the four fit; each keeps its name for VoiceOver. A room
 /// meeting with Talk (#3862 phase 4, `talking` not nil) leads with Talk instead: a tap opens a talk window, and while it
-/// is open the button reads Done and ends it.
+/// is open the button reads Done and ends it (each tap says which it was, `TalkInMeetingIntent.open`).
 struct RecordingButtons: View {
     var id: String
     var onDark = false
@@ -167,7 +167,8 @@ struct RecordingButtons: View {
             if attends && recording {
                 Group {
                     if let talking {
-                        Button(intent: TalkInMeetingIntent(recordingID: id)) {
+                        // What the button shows goes with the tap: a stale Done can't open a window.
+                        Button(intent: TalkInMeetingIntent(recordingID: id, open: !talking)) {
                             if talking { label("Done [Talk Window]", RecordingSymbol.talking) } else { label("Talk [Meeting Talk]", RecordingSymbol.talk) }
                         }
                     } else {

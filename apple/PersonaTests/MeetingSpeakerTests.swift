@@ -79,7 +79,7 @@ import Testing
         try await until("its audio plays") { world.players.first?.pieces.count == 1 }
         #expect(world.players.first?.rate == 24000)
         #expect(s.voice == .realtime)
-        #expect(s.openSpan(for: recording)?.start == 101.5, "the stretch begins with the audio, not the request")
+        #expect(s.openSpan(for: recording)?.start == 101, "the stretch begins with the audio (half a second wider), not the request")
         world.stream?.yield(piece())
         world.timeline = 104
         world.stream?.finish()
@@ -87,7 +87,7 @@ import Testing
         #expect(world.device.said.isEmpty, "the on-device voice says nothing")
         world.players.first?.playOut()
         #expect(s.speaking == nil)
-        #expect(world.spans.map { $0.1 } == [RecordingSpan(start: 101.5, end: 104)])
+        #expect(world.spans.map { $0.1 } == [RecordingSpan(start: 101, end: 104.5)], "half a second wider each side, as the call's")
         #expect(world.routed == 1 && world.restored == 1, "the loudspeaker for the answer, then back")
     }
 
@@ -114,11 +114,11 @@ import Testing
         #expect(world.device.said.first?.text == "回归测试由张三负责。")
         #expect(world.synthesized.isEmpty && world.players.isEmpty)
         #expect(s.voice == .onDevice)
-        #expect(s.openSpan(for: recording)?.start == 100)
+        #expect(s.openSpan(for: recording)?.start == 99.5)
         world.timeline = 103
         world.device.finish()
         #expect(s.speaking == nil)
-        #expect(world.spans.map { $0.1 } == [RecordingSpan(start: 100, end: 103)])
+        #expect(world.spans.map { $0.1 } == [RecordingSpan(start: 99.5, end: 103.5)])
     }
 
     @Test(arguments: [
@@ -221,7 +221,7 @@ import Testing
         let second = UUID()
         s.speak("Second.", id: second, recording: recording, lang: "en", locale: "en-US")
         #expect(world.players.first?.stopped == true)
-        #expect(world.spans.map { $0.1 } == [RecordingSpan(start: 100, end: 102)], "the first one's stretch, up to the cut")
+        #expect(world.spans.map { $0.1 } == [RecordingSpan(start: 99.5, end: 102.5)], "the first one's stretch, up to the cut")
         first?.yield(piece())
         try await until("the second is asked for") { world.stream != nil }
         #expect(world.synthesized.map(\.text) == ["First.", "Second."])
@@ -240,7 +240,7 @@ import Testing
         world.timeline = 100.8
         world.players.first?.playOut() // the player says it ended: a call took the audio
         #expect(s.speaking == nil)
-        #expect(world.spans.map { $0.1 } == [RecordingSpan(start: 100, end: 100.8)])
+        #expect(world.spans.map { $0.1 } == [RecordingSpan(start: 99.5, end: 101.3)])
     }
 
     // MARK: The parts
@@ -273,6 +273,22 @@ import Testing
         #expect(second.frameLength == 1 && second.floatChannelData?[0][0] == -0.5)
         #expect(carry == nil)
         #expect(MeetingVoicePlayer.buffer(Data([0x01]), carry: &carry, format: format) == nil, "half a sample waits for the rest")
+    }
+
+    /// On the recorder's answer player (24 kHz, a room meeting) a voice at another rate is resampled on its way in, its
+    /// odd byte still carried to the next piece.
+    @Test func aVoiceAtAnotherRateIsResampledForTheRecordersPlayer() throws {
+        var carry: UInt8?
+        let samples = [Int16](repeating: 8192, count: 160)
+        var pcm = VoicePCM.data(samples)
+        pcm.append(0x00)
+        let buffer = try #require(MeetingVoicePlayer.buffer(pcm, carry: &carry, rate: 16000, format: RecordingCapture.callFormat))
+        #expect(buffer.frameLength == 240, "10 ms at 16 kHz is 240 samples at 24 kHz")
+        #expect(buffer.floatChannelData?[0][120] == 0.25)
+        #expect(carry == 0x00)
+        var none: UInt8?
+        let same = try #require(MeetingVoicePlayer.buffer(VoicePCM.data(samples), carry: &none, rate: 24000, format: RecordingCapture.callFormat))
+        #expect(same.frameLength == 160, "the player's own rate is not resampled")
     }
 }
 

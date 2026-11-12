@@ -214,6 +214,9 @@ struct VoiceDeps {
     /// The extension said `ready` on the connection that is up: changes only as it connects, drops or ends, so the
     /// meeting page can send Talk to the call without being drawn again on every phase (#3862 phase 4).
     private(set) var connected = false
+    /// A meeting call's latest answer: the voice's newest final caption. Changes only when one is final, so the Live
+    /// Activity can show it (#3862 phase 4) without following every word of the captions; nil in every other call.
+    private(set) var lastAnswer: VoiceCaption?
 
     /// 1, 4 and 10 seconds before each of the three reconnects (docs/assistant/voice.md 1.2 M).
     static let retryDelays: [Duration] = [.seconds(1), .seconds(4), .seconds(10)]
@@ -645,6 +648,10 @@ struct VoiceDeps {
                 captions.append(caption)
             }
             if captions.count > Self.captionLimit { captions.removeFirst(captions.count - Self.captionLimit) }
+        }
+        if meeting != nil, t.final, t.role == VoiceLine.assistant, let said = captions.last(where: { $0.id == id }),
+           !said.text.isEmpty, lastAnswer != said {
+            lastAnswer = said
         }
         lastActivity = deps.clock.now
         if t.role == VoiceLine.user {

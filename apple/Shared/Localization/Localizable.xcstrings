@@ -1013,6 +1013,29 @@
         }
       }
     },
+    "Open a Talk Window": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open a Talk Window"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开始说话"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "話し始める"
+          }
+        }
+      }
+    },
     "Persona didn’t hear anything. Hold Talk while you speak.": {
       "extractionState": "manual",
       "localizations": {
@@ -1147,6 +1170,29 @@
           "stringUnit": {
             "state": "translated",
             "value": "設定を検索"
+          }
+        }
+      }
+    },
+    "Starts recording a meeting in Persona, named after the calendar event happening now. Audio stays on this iPhone, except while you hold Talk: what is said then goes to the voice service. The transcript goes to Knowledge.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Starts recording a meeting in Persona, named after the calendar event happening now. Audio stays on this iPhone, except while you hold Talk: what is said then goes to the voice service. The transcript goes to Knowledge."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在 Persona 中开始会议录音，以日历里正在进行的会议命名。音频保留在这台 iPhone 上，只有按住“说话”时例外：那时说的内容会发送到语音服务。转写文字进入知识库。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Personaで会議の録音を始め、カレンダーで進行中の予定の名前を付けます。音声はこの iPhone に残ります。ただし「話す」を押している間は例外で、そのときに話された内容は音声サービスに送られます。文字起こしはナレッジに入ります。"
           }
         }
       }

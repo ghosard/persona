@@ -24,8 +24,9 @@ import SwiftUI
 ///
 /// **Talk** (#3862 phase 4) takes send's place while the field is empty and Persona can be asked (any role that attends):
 /// held while the owner speaks, to the meeting call when it is live, else asked without it. Not with Just Me on (Talk is
-/// the room's), and not after the meeting. While it is held the caption over the controls says Persona hears; where the
-/// call sends the span to the voice service, the caption says so until the first span went (the contract's Wording).
+/// the room's: turning it on ends a hold), and not after the meeting. While it is held the caption over the controls says
+/// Persona hears; where the call sends the span to the voice service, the caption says so until a span went while it
+/// showed (the contract's Wording).
 /// A typed question goes as the call's `text` frame while the call is live, else through `…/ask`.
 ///
 /// Stop asks first, as the live sheet's bar does: a stopped recording cannot be continued.
@@ -154,6 +155,10 @@ struct MeetingPageBar: View {
         .onChange(of: photoProblem) { _, now in
             if let now { AccessibilityNotification.Announcement(now).post() }
         }
+        // Talk is the room's: Just Me ends a hold (its button goes too, which ends it as well).
+        .onChange(of: justMe) { _, on in
+            if on { call.endHold(entry.id) }
+        }
         .confirmationDialog("Stop Recording?", isPresented: $confirmingStop, titleVisibility: .visible) {
             Button("Stop Recording", role: .destructive) { MeetingRecorder.shared.stop(recordingID: entry.id.uuidString) }
         } message: {
@@ -231,7 +236,8 @@ struct MeetingPageBar: View {
 
     private var talkButton: some View {
         MeetingTalkButton(held: talking, hint: talkSendsAudio ? Self.talkPrivacy : String(localized: "Hold while you speak. Persona answers when you let go."),
-                          press: { startTalk() }, release: { call.endTalk() }, window: { call.toggleWindow(entry.id) })
+                          press: { startTalk() }, release: { call.endTalk() }, window: { openTalkWindow() },
+                          gone: { call.endHold(entry.id) })
     }
 
     /// What the caption says about Talk now, if anything.
@@ -258,8 +264,16 @@ struct MeetingPageBar: View {
 
     private func startTalk() {
         focus.wrappedValue = false
-        guard call.beginTalk(entry.id, window: false) else { return }
+        // The Wording under Talk as the finger went down: a span that goes to the call marks it seen.
+        let shown = talkCaption == Self.talkPrivacy
+        guard call.beginTalk(entry.id, from: .hold, privacyShown: shown) else { return }
         Haptics.tap()
+        AccessibilityNotification.Announcement(String(localized: "Listening to you…")).post()
+    }
+
+    /// VoiceOver's double tap (it can't hold): a talk window, whose hint said where the words go.
+    private func openTalkWindow() {
+        guard call.beginTalk(entry.id, from: .pageWindow, privacyShown: talkSendsAudio) else { return }
         AccessibilityNotification.Announcement(String(localized: "Listening to you…")).post()
     }
 

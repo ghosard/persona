@@ -1272,7 +1272,7 @@ POST /api/v1/assistant/warm                 → {"ok": true, "readiness"?: Readi
 
 Assistant chats (sessions with `assistant: true`) carry `origin`: who opened the chat. The hub records it when the chat is opened (the assistant's settings `assistant.origins`: session id → origin, `origin_ref`, start time),
 and fills it into the session lists sent to the App through the snapshot (`SessionView.origin` / `origin_ref`) (`sessions` / `sessions_delta` pushes, `GET /api/v1/sessions`, `conversations` in `GET /api/v1/assistant`).
-Once recorded, the origin never changes; Agent sessions (`assistant: false`) don't carry it. Hubs that know this field include `conversation_origin` in features.
+Once recorded, the origin never changes; Agent sessions (`assistant: false`) don't carry it, except a meeting's room: it runs in its own directory (`<state dir>/guest-meeting/<recording id>`), not the assistant's, so it is listed with `assistant: false`, yet its row carries `origin` `meeting`, its `origin_ref` and its title, so that clients know it for a room (it takes no ordinary voice call, [voice.md](../assistant/voice.md) "Meeting calls"). Hubs that know this field include `conversation_origin` in features.
 
 | `origin` | Opened by | `origin_ref` | Sidebar (#5195) |
 | --- | --- | --- | --- |

@@ -126,7 +126,9 @@ nonisolated final class RecordingSegmentWriter: @unchecked Sendable {
         var running = false
         var failure: String?
         var segmentFrames = AVAudioFramePosition(RecordingAudioSpec.segmentSeconds * RecordingAudioSpec.sampleRate)
-        var listener: (@Sendable (AVAudioPCMBuffer) -> Void)?
+        var listener: (@Sendable (AVAudioPCMBuffer, Double) -> Void)?
+        /// Host time (seconds) the newest buffer's last sample was captured at, or when the microphone last opened.
+        var capturedUntil: Double?
     }
     private let shared = OSAllocatedUnfairLock(initialState: Shared())
     private var converter: AVAudioConverter?
@@ -144,9 +146,10 @@ nonisolated final class RecordingSegmentWriter: @unchecked Sendable {
     /// cut, followed by the audio of the continue. Other recordings keep their files across such gaps, on a timeline
     /// without them. Set before `start()`.
     var cutsAtGaps = false
-    /// A room meeting (#3862 phase 4): the engine carries a player for the meeting call's voice (`callPlayer`), at this
-    /// format, so the voice plays through the same I/O as the microphone and voice processing can take it out. Set before
-    /// `start()`; nil (every other recording): no player and no output, as before.
+    /// A room meeting (#3862 phase 4): the engine carries a player for the meeting call's voice (`callPlayer`) and one for
+    /// Persona's other spoken answers (`answerPlayer`), at this format, so they play through the same I/O as the microphone
+    /// and voice processing can take them out. Set before `start()`; nil (every other recording): no players and no
+    /// output, as before.
     var callPlayerFormat: AVAudioFormat?
     /// A meeting that starts taking part (#3862 phase 4): the input runs with voice processing, the system's echo
     /// cancellation, from the start to the end (never switched while it records). Set before `start()`; where it will not
@@ -156,10 +159,15 @@ nonisolated final class RecordingSegmentWriter: @unchecked Sendable {
     private(set) var cancelsEcho = false
     /// The meeting call's player (`callPlayerFormat`), attached once at the start; nil otherwise.
     private(set) var callPlayer: AVAudioPlayerNode?
+    /// The player of Persona's spoken answers in a room meeting (`MeetingVoicePlayer`, the voice extension's `speak`),
+    /// beside the call's, attached with it; nil otherwise.
+    private(set) var answerPlayer: AVAudioPlayerNode?
 
     /// Hears every converted buffer (16 kHz mono float) besides the file, on the tap's thread (#3862 phase 4: a meeting's
-    /// Talk spans and the talk window's silence). Cheap work only; nil: nobody listens. Set at any time.
-    var listener: (@Sendable (AVAudioPCMBuffer) -> Void)? {
+    /// Talk spans and the talk window's silence), with where its first sample lies on the recording's timeline (seconds,
+    /// `elapsed` before it): Talk sends only the samples inside its span (`elapsedNow` at the press and the release).
+    /// Cheap work only; nil: nobody listens. Set at any time.
+    var listener: (@Sendable (AVAudioPCMBuffer, Double) -> Void)? {
         get { shared.withLock { $0.listener } }
         set { shared.withLock { $0.listener = newValue } }
     }
@@ -177,6 +185,22 @@ nonisolated final class RecordingSegmentWriter: @unchecked Sendable {
     /// Recorded time on the recording timeline (pauses excluded), seconds. An all-day recording's starts again at a
     /// midnight, with its next day.
     var elapsed: Double { Double(shared.withLock { $0.frames }) / RecordingAudioSpec.sampleRate }
+
+    /// Where the sound the microphone takes at this moment will lie on the timeline: `elapsed` (the buffers the tap has
+    /// had) plus what was captured since the newest of them, which reaches the tap only once its buffer is full (100 to
+    /// 400 ms). `elapsed` while paused. Talk's press and release (#3862 phase 4): the samples of a buffer from before the
+    /// press are not the span's.
+    var elapsedNow: Double {
+        let now = AVAudioTime.seconds(forHostTime: mach_absolute_time())
+        return shared.withLock { s in
+            let base = Double(s.frames) / RecordingAudioSpec.sampleRate
+            guard s.running, let until = s.capturedUntil else { return base }
+            return base + min(Self.longestBuffer, max(0, now - until))
+        }
+    }
+
+    /// The most a tap's buffer holds (its size at the lowest input rate): `elapsedNow` never runs further ahead.
+    static let longestBuffer: Double = 0.5
     /// Recent input level, 0…1 (perceptual, for meters).
     var level: Float { shared.withLock { $0.level } }
     var failure: String? { shared.withLock { $0.failure } }
@@ -240,6 +264,11 @@ nonisolated final class RecordingSegmentWriter: @unchecked Sendable {
         #if os(iOS)
         do {
             try engine.inputNode.setVoiceProcessingEnabled(true)
+            // Voice processing ducks every other sound the phone plays (an answer said through the `speak` voice or the
+            // on-device one, which don't go through this I/O) by default, heavily: the least it can, and no "advanced"
+            // ducking that follows who speaks (iOS 17+).
+            engine.inputNode.voiceProcessingOtherAudioDuckingConfiguration =
+                AVAudioVoiceProcessingOtherAudioDuckingConfiguration(enableAdvancedDucking: false, duckingLevel: .min)
             cancelsEcho = true
         } catch {
             Self.log.notice("recording: no voice processing, recording without echo cancellation: \(error.localizedDescription, privacy: .public)")
@@ -255,14 +284,18 @@ nonisolated final class RecordingSegmentWriter: @unchecked Sendable {
         #endif
     }
 
-    /// The meeting call's player, into the engine's mixer: attached before the engine first starts, so the output joins
-    /// the graph once and a call starting later changes nothing that runs.
+    /// The meeting call's player and the answers' one, into the engine's mixer: attached before the engine first starts,
+    /// so the output joins the graph once and a call or an answer starting later changes nothing that runs.
     private func attachCallPlayer() {
         guard let format = callPlayerFormat, callPlayer == nil else { return }
-        let player = AVAudioPlayerNode()
-        engine.attach(player)
-        engine.connect(player, to: engine.mainMixerNode, format: format)
-        callPlayer = player
+        func attached() -> AVAudioPlayerNode {
+            let player = AVAudioPlayerNode()
+            engine.attach(player)
+            engine.connect(player, to: engine.mainMixerNode, format: format)
+            return player
+        }
+        callPlayer = attached()
+        answerPlayer = attached()
     }
 
     private static let log = Logger(subsystem: "persona", category: "recording")
@@ -380,6 +413,8 @@ nonisolated final class RecordingSegmentWriter: @unchecked Sendable {
     /// queued, so the moment is never overwritten by audio from before the pause.
     private func noteOpening() {
         let now = Date()
+        let host = AVAudioTime.seconds(forHostTime: mach_absolute_time())
+        shared.withLock { $0.capturedUntil = host }
         queue.sync { audioThrough = now }
     }
 
@@ -390,10 +425,10 @@ nonisolated final class RecordingSegmentWriter: @unchecked Sendable {
         converter = AVAudioConverter(from: inFormat, to: outFormat)
         input.installTap(onBus: 0, bufferSize: 4096, format: inFormat) { [weak self] buffer, when in
             // `when` is the first sample's host time; without it, assume the buffer just finished filling.
-            let late = when.isHostTimeValid
-                ? AVAudioTime.seconds(forHostTime: mach_absolute_time()) - AVAudioTime.seconds(forHostTime: when.hostTime)
-                : Double(buffer.frameLength) / buffer.format.sampleRate
-            self?.process(buffer, startedAt: Date().addingTimeInterval(-max(0, late)))
+            let now = AVAudioTime.seconds(forHostTime: mach_absolute_time())
+            let length = Double(buffer.frameLength) / buffer.format.sampleRate
+            let first = when.isHostTimeValid ? AVAudioTime.seconds(forHostTime: when.hostTime) : now - length
+            self?.process(buffer, startedAt: Date().addingTimeInterval(-max(0, now - first)), capturedUntil: first + length)
         }
         tapInstalled = true
     }
@@ -403,7 +438,7 @@ nonisolated final class RecordingSegmentWriter: @unchecked Sendable {
         tapInstalled = false
     }
 
-    private func process(_ buffer: AVAudioPCMBuffer, startedAt: Date) {
+    private func process(_ buffer: AVAudioPCMBuffer, startedAt: Date, capturedUntil: Double) {
         guard let converter, buffer.frameLength > 0 else { return }
         let ratio = outFormat.sampleRate / buffer.format.sampleRate
         let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 32
@@ -419,13 +454,15 @@ nonisolated final class RecordingSegmentWriter: @unchecked Sendable {
         guard error == nil, out.frameLength > 0 else { return }
         let level = Self.level(of: out)
         let frames = AVAudioFramePosition(out.frameLength)
-        let listener = shared.withLock {
-            $0.frames += frames
-            $0.level = $0.level * 0.6 + level * 0.4
-            return $0.listener
+        let (listener, position) = shared.withLock { s -> ((@Sendable (AVAudioPCMBuffer, Double) -> Void)?, Double) in
+            let before = s.frames
+            s.frames += frames
+            s.level = s.level * 0.6 + level * 0.4
+            s.capturedUntil = capturedUntil
+            return (s.listener, Double(before) / RecordingAudioSpec.sampleRate)
         }
         // Read only (the writer's queue gets the same buffer): the listener copies what it keeps.
-        listener?(out)
+        listener?(out, position)
         let box = BufferBox(buffer: out)
         queue.async { [weak self] in self?.write(box.buffer, startedAt: startedAt) }
     }

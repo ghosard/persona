@@ -4,9 +4,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path"
+	"path/filepath"
 	"time"
 
+	"github.com/nwverse/persona/server/internal/compat"
 	"github.com/nwverse/persona/server/internal/i18n"
+	"github.com/nwverse/persona/server/internal/lazyre"
 	"github.com/nwverse/persona/server/internal/prompts"
 	"github.com/nwverse/persona/server/internal/proto"
 )
@@ -26,8 +30,8 @@ import (
 //
 // The model hears only Talk: the app sends talk{on} and talk{off} around what the owner says to it, and between those
 // spans the extension feeds the upstream silence itself, so the session stays open and the model hears nothing. The
-// app is not trusted with that: its audio outside a span is dropped and logged, and the silence goes in its place, so
-// a phone bug cannot stream the meeting to the voice service.
+// app is not trusted with that: its audio outside a span is dropped and logged, and the silence goes in its place, and
+// a span it leaves open past talkMost is closed, so a phone bug cannot stream the meeting to the voice service.
 
 const (
 	// modeMeeting is start.mode of a meeting call.
@@ -46,6 +50,11 @@ var meetingTools = []string{"delegate_task"}
 // silenceTick is how often, and how much, silence the extension feeds the upstream between Talk spans.
 var silenceTick = 100 * time.Millisecond
 
+// talkMost is how long a Talk span stays open without the app's talk{off}: a little longer than the app's own
+// longest (the Live Activity's talk window, 60 s). Past it the extension closes the span itself (capTalk), so a lost
+// off (a gesture the system took over, a window whose timer never ran) cannot send the meeting to the voice service.
+var talkMost = 90 * time.Second
+
 // meetingCall is a meeting call's state beyond its target (under conversation.mu).
 type meetingCall struct {
 	recording string
@@ -56,6 +65,7 @@ type meetingCall struct {
 	inside    int       // the app's audio frames forwarded, in every span
 	outside   int       // the app's audio frames outside a span: dropped, the extension's silence went instead
 	stray     bool      // the frames outside a span now were logged (once a gap between spans)
+	capped    int       // spans the extension closed itself, open past talkMost
 }
 
 // roomRead is what the hub said of a meeting call's recording's room.
@@ -89,6 +99,24 @@ func (c *conversation) checkRoom(recording string, r roomRead, machine, session 
 	return nil
 }
 
+// isMeetingRoom: s is a meeting's room. The manager says origin meeting on the room's row; a manager from before it
+// did lists the room as a plain Claude Code session, so its directory tells as well: <state dir>/guest-meeting/<id>,
+// where only rooms run (node/assistant_guest.go meetingRoomDir; the recording's id is a UUID).
+func isMeetingRoom(s *proto.Session) bool {
+	if s.Origin == originMeeting {
+		return true
+	}
+	if s.Cwd == "" || s.PaneID != "" {
+		return false
+	}
+	dir := path.Clean(filepath.ToSlash(s.Cwd))
+	parent := path.Dir(dir)
+	return roomID.MatchString(path.Base(dir)) && path.Base(parent) == "guest-meeting" && compat.IsStateDir(path.Base(path.Dir(parent)))
+}
+
+// roomID is a room directory's name: its recording's id.
+var roomID = lazyre.New(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
 // snapshotTurns is how many of the bound conversation's last exchanges its snapshot is read from.
 func (c *conversation) snapshotTurns() int {
 	if c.meeting != nil {
@@ -106,17 +134,25 @@ func (c *conversation) recentFrom(items []proto.Item) []prompts.VoiceLine {
 }
 
 // roomRecent is a room's last questions and answers in items: the owner's own messages (no message source: not a
-// batch, a heard ask, a photo or the meeting's header) and the room's replies, made speakable and cut. Tool calls
-// (the topics) are left out.
+// batch, a heard ask, a photo or the meeting's header) and the room's replies to them, made speakable and cut. What
+// the room wrote after any other message (a heard ask's answer, a batch or a photo it wrote about) goes with that
+// message: kept, it would read as the answer to the owner's question before it. Tool calls (the topics) are left out.
 func roomRecent(l i18n.Lang, items []proto.Item) []prompts.VoiceLine {
 	var out []prompts.VoiceLine
+	answering := false // the last user message was the owner's own: the room's text from here on answers it
 	for _, it := range items {
 		if it.Kind != proto.KindText {
 			continue
 		}
-		own := it.Role == "user" && it.Source == nil && it.Injected == nil && it.From == ""
-		if !own && it.Role != "assistant" {
+		switch it.Role {
+		case "user":
+			answering = it.Source == nil && it.Injected == nil && it.From == ""
+		case "assistant":
+		default:
 			continue
+		}
+		if !answering {
+			continue // a reply whose question the window does not show is left out as well
 		}
 		if line := recentLine(l, it.Role, it.Text); line != nil {
 			out = append(out, *line)
@@ -124,6 +160,9 @@ func roomRecent(l i18n.Lang, items []proto.Item) []prompts.VoiceLine {
 	}
 	if len(out) > recentMost {
 		out = out[len(out)-recentMost:]
+		for len(out) > 0 && out[0].Role != "user" {
+			out = out[1:] // its question was cut
+		}
 	}
 	return out
 }
@@ -162,10 +201,11 @@ func (c *conversation) talkFrame(on bool) {
 		}
 		return
 	}
-	if on == m.talk {
-		return // said again
-	}
 	now := time.Now()
+	c.capTalk(now)
+	if on == m.talk {
+		return // said again, or the off of a span closed past talkMost
+	}
 	if on {
 		m.talk, m.talkAt, m.frames, m.stray = true, now, 0, false
 		m.spans++
@@ -181,9 +221,11 @@ func (c *conversation) talkFrame(on bool) {
 // feedSilence) and logged, once a gap.
 func (c *conversation) talkGate(n int) bool {
 	m := c.meeting
-	switch {
-	case m == nil:
+	if m == nil {
 		return true
+	}
+	c.capTalk(time.Now())
+	switch {
 	case m.talk:
 		m.frames++
 		m.inside++
@@ -195,6 +237,19 @@ func (c *conversation) talkGate(n int) bool {
 		c.logf("the app sent audio outside a Talk span (%d bytes): dropped, the upstream hears silence", n)
 	}
 	return false
+}
+
+// capTalk closes a meeting call's Talk span that has been open longer than talkMost at now (mu held): from then on
+// the upstream hears the extension's silence and the app's audio is dropped, until the next talk{on}.
+func (c *conversation) capTalk(now time.Time) {
+	m := c.meeting
+	if m == nil || !m.talk || now.Sub(m.talkAt) <= talkMost {
+		return
+	}
+	m.talk, m.stray = false, false
+	m.capped++
+	c.logf("talk %d: no talk off after %v, %d frames of audio: closed, the upstream hears silence until the next talk on",
+		m.spans, logDur(now.Sub(m.talkAt)), m.frames)
 }
 
 // feedSilence feeds a meeting call's upstream silence, tick by tick, while no Talk span is open and a session is up,
@@ -210,6 +265,7 @@ func (c *conversation) feedSilence(tick time.Duration) {
 		case <-t.C:
 		}
 		c.mu.Lock()
+		c.capTalk(time.Now()) // a span whose off never came: closed even while the app sends nothing
 		up, w, ready, open, rate := c.up, c.w, c.ready, c.meeting.talk, 0
 		if c.p != nil {
 			rate = c.p.inputRate()
@@ -230,5 +286,9 @@ func (m *meetingCall) meetingLog() string {
 	if m == nil {
 		return ""
 	}
-	return fmt.Sprintf(", talk spans %d, audio frames %d (outside a span %d)", m.spans, m.inside, m.outside)
+	capped := ""
+	if m.capped > 0 {
+		capped = fmt.Sprintf(" (%d closed past %v)", m.capped, logDur(talkMost))
+	}
+	return fmt.Sprintf(", talk spans %d%s, audio frames %d (outside a span %d)", m.spans, capped, m.inside, m.outside)
 }

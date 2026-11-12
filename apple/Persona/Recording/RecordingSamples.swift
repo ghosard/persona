@@ -218,7 +218,8 @@ enum RecordingSamples {
         for _ in 0..<150 where !MeetingCall.shared.isLive(liveMeeting) {
             try? await Task.sleep(for: .milliseconds(200))
         }
-        guard MeetingCall.shared.beginTalk(liveMeeting, window: false) else { return }
+        // As a finger on the page would: the first-use note shows under Talk as it goes down.
+        guard MeetingCall.shared.beginTalk(liveMeeting, from: .hold, privacyShown: true) else { return }
         try? await Task.sleep(for: .seconds(10))
         if MeetingCall.shared.talk?.window == false { MeetingCall.shared.endTalk() }
     }

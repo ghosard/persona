@@ -11,10 +11,13 @@ import PersonaKit
 /// voice fails or has not started within `Deps.realtimeWithin`, with the phone's on-device voice for the answer's
 /// language. Either way in the meeting recording's own audio session (so the recording goes on), with the voice call's
 /// route rule for where it plays (`VoiceRoute.output`): a connected headset, else the loudspeaker, never the earpiece;
-/// the recording keeps its microphone. Every stretch the phone speaks in is marked on the recording
-/// (`RecordingAttendance.spoken`), from when its audio actually starts: a sentence at least half inside one is Persona's
-/// own voice and stays out of the transcript and the live log (the contract requires it). The rules of `MeetingAsk`
-/// (still recording, the role still speaks) are checked again just before the first sound.
+/// the recording keeps its microphone. In a room meeting the realtime voice plays on the recorder's own engine
+/// (`RecordingCapture.answerPlayer`, #3862 phase 4), so the system's echo cancellation takes it out of the microphone and
+/// doesn't duck it. Every stretch the phone speaks in is marked on the recording (`RecordingAttendance.spoken`), from when
+/// its audio actually starts, half a second wider each side as the meeting call's (`RecordingSpan.widened`): a sentence
+/// at least half inside one is Persona's own voice and stays out of the transcript and the live log (the contract
+/// requires it). The rules of `MeetingAsk` (still recording, the role still speaks) are checked again just before the
+/// first sound.
 @MainActor @Observable
 final class MeetingSpeaker {
     static let shared = MeetingSpeaker(deps: .live)
@@ -51,10 +54,11 @@ final class MeetingSpeaker {
     /// if the system never says the answer ended (an interruption that never ends).
     static let longestAnswer: Double = 150
 
-    /// The stretch being said now, still open: a sentence transcribed meanwhile is checked against it.
+    /// The stretch being said now, still open, half a second wider each side (the contract's「plus half a second」, as the
+    /// meeting call's): a sentence transcribed meanwhile is checked against it, and it is what is marked when it ends.
     func openSpan(for id: UUID) -> RecordingSpan? {
         guard recording == id, let start = spanStart else { return nil }
-        return RecordingSpan(start: start, end: min(max(deps.timeline(), start), start + Self.longestAnswer))
+        return RecordingSpan(start: start, end: min(max(deps.timeline(), start), start + Self.longestAnswer)).widened()
     }
 
     /// Says `text` for the exchange `id` of `recording`, in `lang` (BCP 47, the hub's), else the language it is written
@@ -81,6 +85,13 @@ final class MeetingSpeaker {
         player?.stop()
         if voice == .onDevice { deps.onDevice.stop() }
         finished()
+    }
+
+    /// The recording paused (`MeetingCall`): an answer playing on the recorder's engine stopped with it, so it ends now
+    /// rather than going on mid-sentence after Continue. One on a player of its own goes on, as before.
+    func recordingPaused() {
+        guard speaking != nil, player?.onRecorder == true else { return }
+        stop()
     }
 
     #if DEBUG

@@ -78,6 +78,32 @@ import Testing
         #expect(MeetingCallRule.extensionID(extensions: [stopped], info: info(["meeting"])) == nil)
     }
 
+    /// A running call ends only on the hub's definite no; an ask that failed, or an extension restarting, says nothing.
+    @Test func onlyADefiniteNoEndsARunningCall() {
+        #expect(!MeetingCallRule.declines(extensions: [Self.voice], info: info(["target", "meeting"])))
+        #expect(MeetingCallRule.declines(extensions: [Self.voice], info: info(["target", "speak"])), "no meeting")
+        #expect(MeetingCallRule.declines(extensions: [Self.voice], info: info(["meeting"], protocolVersion: 1)))
+        #expect(MeetingCallRule.declines(extensions: [Self.voice], info: .missing))
+        #expect(MeetingCallRule.declines(extensions: [Self.voice], info: .forbidden))
+        #expect(MeetingCallRule.declines(extensions: [], info: nil), "no voice extension at all")
+        #expect(!MeetingCallRule.declines(extensions: [Self.voice], info: .failed("offline")), "a failed ask")
+        #expect(!MeetingCallRule.declines(extensions: nil, info: nil), "not known")
+        let restarting = try! JSON.decoder.decode(HubExtension.self, from: Data(#"{"id":"voice","name":"语音","kind":"voice","status":"starting"}"#.utf8))
+        #expect(!MeetingCallRule.declines(extensions: [restarting], info: nil), "an extension restarting")
+    }
+
+    /// P9: the phone asks whether the hub takes meeting calls as the meeting wants one, then after 30 s, 2 and 5 minutes
+    /// while the answer says nothing either way, then no more; never again once the hub answered.
+    @Test func askingForMeetingCallsStops() {
+        #expect(MeetingCallRule.probeAgain(extensions: nil, info: nil, tries: 1) == 30)
+        #expect(MeetingCallRule.probeAgain(extensions: [Self.voice], info: .failed("offline"), tries: 2) == 120)
+        #expect(MeetingCallRule.probeAgain(extensions: [Self.voice], info: .failed("offline"), tries: 3) == 300)
+        #expect(MeetingCallRule.probeAgain(extensions: [Self.voice], info: .failed("offline"), tries: 4) == nil, "the retries are used up")
+        #expect(MeetingCallRule.probeAgain(extensions: [Self.voice], info: info(["target", "speak"]), tries: 1) == nil, "an extension without meeting: never again")
+        #expect(MeetingCallRule.probeAgain(extensions: [], info: nil, tries: 1) == nil, "no voice extension")
+        #expect(MeetingCallRule.probeAgain(extensions: [Self.voice], info: info(["meeting"]), tries: 1) == nil, "it takes them: the call starts")
+    }
+
     /// Talk is offered wherever Persona can be asked in a room meeting, listening included; it sends audio to the voice
     /// service only for a participant on a hub whose extension takes meeting calls (the privacy texts' rule).
     @Test func whereTalkIsAndWhereItSendsAudio() {
@@ -213,6 +239,15 @@ import Testing
         #expect(next.audio.isEmpty)
     }
 
+    /// `frames` samples of a half-scale signal at 16 kHz, as the recorder's tap hands them over.
+    private func tapBuffer(_ frames: Int) throws -> AVAudioPCMBuffer {
+        let format = try #require(AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false))
+        let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)))
+        buffer.frameLength = AVAudioFrameCount(frames)
+        for i in 0..<frames { buffer.floatChannelData![0][i] = 0.5 }
+        return buffer
+    }
+
     /// The recorder's tap hands the call PCM16 of what it captured (and its level for the talk window).
     @Test func theTapFeedsTheUplink() throws {
         let tap = MeetingTalkTap()
@@ -220,22 +255,94 @@ import Testing
         let sent = Order()
         uplink.open(rate: 16000) { pcm in sent.add("\(pcm.count)") }
         tap.connect(uplink)
-        let format = try #require(AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false))
-        let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 160))
-        buffer.frameLength = 160
-        for i in 0..<160 { buffer.floatChannelData![0][i] = 0.5 }
-        tap.feed(buffer)
+        let buffer = try tapBuffer(160)
+        tap.feed(buffer, at: 0)
         #expect(sent.items.isEmpty, "outside a span")
         #expect(abs(tap.level - (-6.02)) < 0.1, "the level of a half-scale signal, dBFS")
         uplink.talk(true) {}
-        tap.feed(buffer)
+        tap.feed(buffer, at: 0.01)
+        #expect(sent.items.isEmpty, "the uplink's span alone doesn't open the tap's")
+        tap.open(at: 0.02)
+        tap.feed(buffer, at: 0.02)
         #expect(sent.items == ["320"], "160 samples of PCM16")
         tap.connect(nil)
-        tap.feed(buffer)
+        tap.feed(buffer, at: 0.03)
         #expect(sent.items == ["320"], "nothing after the call went")
         let samples: [Float] = [0, 1, -1, 2]
         let pcm = samples.withUnsafeBufferPointer { MeetingTalkTap.pcm16($0) }
         #expect(VoicePCM.samples(pcm) == [0, 32767, -32767, 32767], "clipped")
+    }
+
+    /// A buffer reaches the tap only once it is full: the one that straddles the press sends only its samples from the
+    /// press on, the one that straddles the release only those before it, and `covers` says when the release's has gone
+    /// through (then `talk off` may go).
+    @Test func onlyTheSamplesInsideTheSpanGoUp() throws {
+        let tap = MeetingTalkTap()
+        let uplink = VoiceUplink(gated: true)
+        let sent = Order()
+        uplink.open(rate: 16000) { pcm in sent.add("\(pcm.count / 2)") }
+        tap.connect(uplink)
+        uplink.talk(true) {}
+        // Pressed at 1.0 s, 50 ms into a buffer of 100 ms that began at 0.95 s.
+        tap.open(at: 1.0)
+        tap.feed(try tapBuffer(1600), at: 0.85)
+        #expect(sent.items.isEmpty, "a buffer wholly before the press")
+        tap.feed(try tapBuffer(1600), at: 0.95)
+        #expect(sent.items == ["800"], "only the 50 ms after the press")
+        tap.feed(try tapBuffer(1600), at: 1.05)
+        #expect(sent.items == ["800", "1600"], "a buffer inside the span goes whole")
+        // Let go at 1.2 s, 50 ms into the next buffer.
+        tap.close(at: 1.2)
+        #expect(!tap.covers(1.2), "the buffer that holds the release hasn't come yet")
+        tap.feed(try tapBuffer(1600), at: 1.15)
+        #expect(sent.items == ["800", "1600", "800"], "only the 50 ms before the release")
+        #expect(tap.covers(1.2))
+        tap.feed(try tapBuffer(1600), at: 1.25)
+        #expect(sent.items.count == 3, "nothing after the release, though the uplink's span is still open")
+        tap.clear()
+        tap.feed(try tapBuffer(1600), at: 1.35)
+        #expect(sent.items.count == 3)
+        #expect(MeetingTalkTap.inside(start: 2, end: nil, position: 0.9, count: 1600, rate: 16000) == nil, "a buffer before the span")
+        #expect(MeetingTalkTap.inside(start: 0, end: 0.5, position: 1, count: 1600, rate: 16000) == nil, "a buffer after it")
+        #expect(MeetingTalkTap.inside(start: 1, end: nil, position: 0.95, count: 1600, rate: 16000) == 800..<1600)
+    }
+
+    /// A span the call carried and lost (its socket dropped, the call ended) is asked without the call over its whole
+    /// length, from where it began; while the call carries it, or for one that never went to it, nothing changes.
+    @Test func aSpanTheCallLosesIsAskedWithoutIt() async throws {
+        let span = MeetingCall.Talk(recording: recording, source: .hold, viaCall: true, start: 42, opened: now)
+        let lost = try #require(span.lost(callTalking: false))
+        #expect(!lost.viaCall)
+        #expect(lost.id == span.id && lost.start == 42 && lost.source == .hold, "the same span, from its start")
+        #expect(span.lost(callTalking: true) == nil, "the call still carries it")
+        #expect(lost.lost(callTalking: false) == nil, "already asked without the call")
+        // What tells: the call's `talking`, which a dropped socket clears.
+        let rig = VoiceRig()
+        let call = meetingCall(rig)
+        await call.begin()
+        ready(rig.socket!, rig.key)
+        #expect(call.talk(true))
+        #expect(span.lost(callTalking: call.talking) == nil)
+        rig.socket!.drop()
+        #expect(span.lost(callTalking: call.talking)?.viaCall == false, "the drop hands the span to `…/ask`")
+    }
+
+    /// A span closed by the recording's pause is still asked with its words: the open segment is cut while paused too, so
+    /// it is transcribed now rather than after Continue.
+    @Test func aPausedRecordingStillCutsTheSpansSegment() throws {
+        #expect(RecordingCapture.cutsOnFlush(.recording))
+        #expect(RecordingCapture.cutsOnFlush(.paused))
+        #expect(!RecordingCapture.cutsOnFlush(.idle))
+        #expect(!RecordingCapture.cutsOnFlush(.starting))
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let writer = RecordingSegmentWriter(directory: dir)
+        writer.append(try tapBuffer(48000), startedAt: now)
+        writer.pause()
+        let cut = try #require(writer.cut(), "the span's audio is in the segment the pause left open")
+        #expect(abs(cut.duration - 3) < 0.001)
+        #expect(writer.cut() == nil, "nothing more until the recording goes on")
     }
 
     // MARK: Reconnecting
@@ -309,6 +416,30 @@ import Testing
         #expect(window.tap() == .tapped)
         #expect(window.tap() == nil)
         #expect(window.tick(now.addingTimeInterval(61)) == nil)
+    }
+
+    /// The Live Activity's tap says what its button showed: Talk opens a window only when nothing is open, Done ends any
+    /// open span (a window, or a hold the page lost), and a tap that no longer matches does nothing: a Done tapped just
+    /// after the window closed on silence opens no window that would stream the room.
+    @Test func theActivitysTapDoesWhatItsButtonShowed() {
+        #expect(MeetingCallRule.activityTap(open: true, spanOpen: false) == .open)
+        #expect(MeetingCallRule.activityTap(open: false, spanOpen: true) == .close)
+        #expect(MeetingCallRule.activityTap(open: false, spanOpen: false) == .ignore, "Done after the window closed itself")
+        #expect(MeetingCallRule.activityTap(open: true, spanOpen: true) == .ignore, "Talk drawn before the window opened")
+        #expect(MeetingCallRule.activityTap(open: nil, spanOpen: false) == .open, "an activity from before: a toggle")
+        #expect(MeetingCallRule.activityTap(open: nil, spanOpen: true) == .close)
+        #expect(TalkInMeetingIntent(recordingID: "r", open: false).open == false)
+        #expect(TalkInMeetingIntent(recordingID: "r").open == nil)
+    }
+
+    /// A span goes to the live call from the page (held, or VoiceOver's window, where the Wording shows), but from the Lock
+    /// Screen or the island only once the owner was told what Talk sends: before that it is asked without the call.
+    @Test func aLockScreenWindowGoesToTheCallOnlyOnceTheOwnerWasTold() {
+        #expect(MeetingCallRule.toCall(live: true, source: .hold, privacySeen: false))
+        #expect(MeetingCallRule.toCall(live: true, source: .pageWindow, privacySeen: false))
+        #expect(!MeetingCallRule.toCall(live: true, source: .activity, privacySeen: false), "the Lock Screen shows no Wording")
+        #expect(MeetingCallRule.toCall(live: true, source: .activity, privacySeen: true))
+        #expect(!MeetingCallRule.toCall(live: false, source: .hold, privacySeen: true), "no call: asked without it")
     }
 
     // MARK: Talk without a call
@@ -388,6 +519,42 @@ import Testing
                                               answer: String(repeating: "答", count: 400), answeredAt: now,
                                               topic: String(repeating: "议", count: 90), talking: true)
         #expect(try JSONEncoder().encode(state).count < 1536)
+    }
+
+    /// The third line is the newest answer, whichever way it came: the room's latest ask, or what the meeting call said
+    /// (Talk and typed questions go to the call while it is live). It shows for 60 s after it came, then the latest line.
+    @Test func theLockScreenShowsTheCallsAnswerToo() throws {
+        let asked = RecordingActivity.Answer(text: "From the ask.", at: now)
+        let said = RecordingActivity.Answer(text: "From the call.", at: now.addingTimeInterval(5))
+        #expect(RecordingActivity.newest([asked, said]) == said)
+        #expect(RecordingActivity.newest([said, asked]) == said, "newest first, whatever the order")
+        #expect(RecordingActivity.newest([nil, asked]) == asked)
+        #expect(RecordingActivity.newest([nil, nil]) == nil)
+        var e = meeting()
+        e.attendance?.live = [RecordingSentence(start: 50, end: 54, text: "The room goes on.")]
+        func content(at: TimeInterval) -> RecordingActivity.Content {
+            RecordingActivity.content(entry: e, recording: true, interrupted: false, elapsed: 60, previous: nil,
+                                      now: now.addingTimeInterval(at), answer: said.text, answeredAt: said.at)
+        }
+        #expect(content(at: 30).answer == "From the call.")
+        #expect(content(at: 70).answer == nil, "60 s after it came the line takes its place")
+        #expect(content(at: 70).line == "The room goes on.")
+    }
+
+    /// A meeting call keeps its latest answer: the voice's newest final caption, never a partial one.
+    @Test func aMeetingCallKeepsItsLatestAnswer() async throws {
+        let rig = VoiceRig()
+        let call = meetingCall(rig)
+        await call.begin()
+        ready(rig.socket!, rig.key)
+        rig.socket!.deliver(#"{"type":"transcript","role":"assistant","id":"a1","text":"On Nov 3","final":false}"#)
+        #expect(call.lastAnswer == nil, "not final yet")
+        rig.socket!.deliver(#"{"type":"transcript","role":"assistant","id":"a1","text":"On Nov 3 you kept them through Q3.","final":true}"#)
+        #expect(call.lastAnswer?.text == "On Nov 3 you kept them through Q3.")
+        rig.socket!.deliver(#"{"type":"transcript","role":"user","id":"u2","text":"And the export cap?","final":true}"#)
+        #expect(call.lastAnswer?.text == "On Nov 3 you kept them through Q3.", "the owner's words are no answer")
+        let plain = rig.call()
+        #expect(plain.lastAnswer == nil)
     }
 
     // MARK: A room opened as a chat

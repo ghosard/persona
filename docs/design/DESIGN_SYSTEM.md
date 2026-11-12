@@ -1664,9 +1664,11 @@ page the user watches during the meeting is the page they keep writing in after 
   release under half a second says to hold it while speaking; a span asked without the call that held no words says
   Persona heard nothing; both go after a few seconds. VoiceOver can't hold: its double tap opens a talk window (as the
   Lock Screen's tap), the next ends it; its hint says where the words go. Where a span goes to the voice service (taking
-  part, the extension takes meeting calls) the caption shows the contract's privacy Wording until the first span went
-  ("Audio stays on this iPhone, except while you hold Talk: what is said then goes to the voice service."), and the line
-  under Record says it before the meeting starts. Hidden with Just Me on (Talk is the room's) and after the meeting.
+  part, the extension takes meeting calls) the caption shows the contract's privacy Wording until a span went while it
+  showed ("Audio stays on this iPhone, except while you hold Talk: what is said then goes to the voice service."), and the
+  line under Record says it before the meeting starts; until then the Lock Screen's Talk is asked without the call, since
+  the Lock Screen has no room for the Wording. Hidden with Just Me on (Talk is the room's) and after the meeting: a hold
+  ends when Talk leaves the screen under the finger (Just Me, the page left, a word typed), and after 60 seconds.
   While the meeting call's voice speaks, the page's **Stop Speaking** row shows and cuts it (`interrupt`), as it does for
   a spoken answer. Reason: push-to-talk is the contract's way of addressing Persona (no wake phrase), a hold makes the
   span exactly what the owner said, and taking send's place keeps typing and talking one gesture apart without a second

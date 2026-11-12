@@ -80,8 +80,12 @@ struct MeetingPage: View {
         .themedGroupedPage()
         .navigationTitle(close == nil ? String(localized: "Meeting") : "")
         .navigationBarTitleDisplayMode(.inline)
-        // `meeting_live` and reconnects read the meeting again only while a page shows it (or it records here).
-        .onTabVisibility(appear: { watch(id) }, disappear: { unwatch() })
+        // `meeting_live` and reconnects read the meeting again only while a page shows it (or it records here). A Talk
+        // held on it ends as it goes (#3862 phase 4): nothing else would let it go.
+        .onTabVisibility(appear: { watch(id) }, disappear: {
+            unwatch()
+            meetingCall.endHold(id)
+        })
         .onChange(of: id) { _, new in
             guard watching != nil else { return }
             unwatch()

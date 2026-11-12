@@ -16,6 +16,52 @@ nonisolated enum MeetingCallRule {
         return voice.id
     }
 
+    /// The hub said for sure that it takes no meeting calls: it lists no voice extension, or the one it runs answered
+    /// `/info` without `meeting` (from before phase 4, an older protocol, not set up), or `404` / `403`. An ask that
+    /// failed, or a voice extension that isn't running at that moment (restarting, an upgrade), says nothing either way:
+    /// a running call stays then (its own `ready` and close decide), and the phone asks again later (`probeAgain`).
+    static func declines(extensions: [HubExtension]?, info: VoiceInfoState?) -> Bool {
+        guard let extensions else { return false }
+        guard extensions.contains(where: { $0.kind == "voice" }) else { return true }
+        switch info {
+        case .info?: return extensionID(extensions: extensions, info: info) == nil
+        case .missing?, .forbidden?: return true
+        case .failed?, nil: return false
+        }
+    }
+
+    /// How long after the `tries`-th ask (from 1) whether the hub takes meeting calls the phone asks again, while a meeting
+    /// that wants a call has none (P9: never once a minute for hours with the screen locked): not again once the hub
+    /// answered either way (`extensionID`, `declines`), else after 30 seconds, 2 minutes and 5 minutes, then no more for
+    /// this recording. Whatever else asks meanwhile (a spoken answer's route, a chat's voice button) is heard too.
+    static func probeAgain(extensions: [HubExtension]?, info: VoiceInfoState?, tries: Int) -> TimeInterval? {
+        guard extensionID(extensions: extensions, info: info) == nil, !declines(extensions: extensions, info: info),
+              tries >= 1, tries <= probeRetries.count else { return nil }
+        return probeRetries[tries - 1]
+    }
+
+    static let probeRetries: [TimeInterval] = [30, 120, 300]
+
+    /// Whether a Talk span goes to the live meeting call (else it is asked without one, through `…/ask`). One the Lock
+    /// Screen or the island opened goes only once the owner has been told what Talk sends (`MeetingTalkPrivacy`): those
+    /// surfaces don't show the Wording, the meeting page does (under Talk, and in its spoken hint).
+    static func toCall(live: Bool, source: MeetingTalkSource, privacySeen: Bool) -> Bool {
+        live && (source != .activity || privacySeen)
+    }
+
+    /// What a tap on the Live Activity's Talk or Done does: the action the button showed (`open`), checked against what is
+    /// open now. Talk opens a window only when no span is open, Done ends whatever span is (a window, or a hold the page
+    /// lost); a tap that no longer matches (a Done tapped just after the window closed itself on silence, before the Lock
+    /// Screen drew Talk again) does nothing, so it can never open a window that streams the room. `open` nil (an activity
+    /// drawn before the button said which): a toggle, as it was.
+    static func activityTap(open: Bool?, spanOpen: Bool) -> MeetingActivityTap {
+        switch open {
+        case true?: spanOpen ? .ignore : .open
+        case false?: spanOpen ? .close : .ignore
+        case nil: spanOpen ? .close : .open
+        }
+    }
+
     /// Talk is offered on the meeting page and on the Lock Screen: a room meeting this phone records that Persona can be
     /// asked in (`MeetingAsk.canAsk`: it attends, as listener or participant, and the hub took the room). With a call it
     /// goes to the call, otherwise it is asked through `…/ask`, transcribed on the phone.
@@ -51,6 +97,19 @@ nonisolated enum MeetingCallRule {
         }
     }
 }
+
+/// Where a Talk span was opened (#3862 phase 4).
+nonisolated enum MeetingTalkSource: Equatable, Sendable {
+    /// Held on the meeting page.
+    case hold
+    /// VoiceOver's double tap on the page's Talk (it can't hold): a talk window, its hint saying where the words go.
+    case pageWindow
+    /// The Live Activity's Talk, on the Lock Screen or in the island: a talk window.
+    case activity
+}
+
+/// What a tap on the Live Activity's Talk / Done does (`MeetingCallRule.activityTap`).
+nonisolated enum MeetingActivityTap: Equatable, Sendable { case open, close, ignore }
 
 /// The Lock Screen's and the island's talk window (#3862 phase 4): their buttons can't be held, so a tap opens it, and it
 /// ends on another tap, 2 seconds of silence after speech, 20 seconds without speech, or 60 seconds in all. Pure: the

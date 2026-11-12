@@ -3,6 +3,7 @@ package voice
 import (
 	"bytes"
 	"encoding/base64"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/nwverse/persona/server/internal/extwire"
+	"github.com/nwverse/persona/server/internal/i18n"
 	"github.com/nwverse/persona/server/internal/proto"
 )
 
@@ -20,11 +22,12 @@ import (
 // the model hears only Talk spans; the upstream never pauses; a resumed call is told only its own captions.
 
 // roomHub is a hub with a meeting's room conversation room1 on machine m (recording rec1, its room ready), whose
-// transcript has the meeting's header, a batch of its lines, a question of the owner's and its answer, and another
-// batch the room only took the topics from.
+// transcript has the meeting's header, a batch of its lines, a question of the owner's and its answer, another batch
+// the room only took the topics from, a batch and a heard ask the room answered in words.
 func roomHub(t *testing.T) *fakeHub {
 	hub := newFakeHub(t)
-	// A guest of the assistant's, in its own directory: the hub does not list it as an assistant conversation.
+	// Listed as the manager lists a room (assistant/fleet_sessions.go decorateInventory): a guest of the assistant's in
+	// its own directory, so no assistant row, with its origin, recording and title.
 	hub.sessions["room1"] = &fakeSession{id: "room1", status: "idle", look: func(s *proto.Session) {
 		s.Origin, s.OriginRef, s.Title, s.Agent, s.Cwd = originMeeting, "rec1", "1112 | Design review", "claude", "/home/me/.persona/guest-meeting/rec1"
 	}}
@@ -37,6 +40,10 @@ func roomHub(t *testing.T) *fakeHub {
 		proto.Item{Role: "assistant", Kind: proto.KindText, Text: "You kept them through Q3."},
 		proto.Item{Role: "user", Kind: proto.KindText, Text: "New lines: wombat-line-32", Source: meeting},
 		proto.Item{Role: "assistant", Kind: proto.KindToolUse, ToolName: "meeting_topics_set"},
+		proto.Item{Role: "user", Kind: proto.KindText, Text: "New lines: wombat-line-33", Source: meeting},
+		proto.Item{Role: "assistant", Kind: proto.KindText, Text: "otter-batch-reply-34: the whiteboard shows the Q3 targets."},
+		proto.Item{Role: "user", Kind: proto.KindText, Text: "Sam asks: who owns the export cap?", Source: meeting},
+		proto.Item{Role: "assistant", Kind: proto.KindText, Text: "otter-ask-reply-35: Dana does."},
 	)
 	hub.rooms = map[string]*liveRoom{"rec1": {State: "ready", MachineID: "m", SessionID: "room1"}, "bare": nil}
 	return hub
@@ -82,6 +89,9 @@ func TestMeetingCall(t *testing.T) {
 	if !slices.Equal(names, []string{"delegate_task"}) {
 		t.Fatalf("tools: %v", names)
 	}
+	if desc := start["tools"].([]any)[0].(map[string]any)["description"].(string); !strings.Contains(desc, "会议对话") || strings.Contains(desc, "状态") {
+		t.Fatalf("delegate_task is not the meeting's: %s", desc)
+	}
 	instructions := start["instructions"].(string)
 	for _, want := range []string{"Alex's assistant, in a meeting", "everyone in the room may hear you", "while holding Talk",
 		"hand it with delegate_task to the meeting conversation", "Alex: What did we decide on the vendor?",
@@ -91,7 +101,7 @@ func TestMeetingCall(t *testing.T) {
 		}
 	}
 	for _, not := range []string{"quagga-note-17", "kiwi-just-me-48", "wombat-line", "Meeting: Design review", "meeting_topics_set",
-		"search_knowledge", "list_agents", "Status:"} {
+		"search_knowledge", "list_agents", "Status:", "otter-", "Sam asks"} {
 		if strings.Contains(instructions, not) {
 			t.Errorf("instructions have %q:\n%s", not, instructions)
 		}
@@ -118,6 +128,14 @@ func TestMeetingCallRefusals(t *testing.T) {
 	hub := roomHub(t)
 	hub.rooms["starting"] = &liveRoom{State: "starting"}
 	hub.rooms["other"] = &liveRoom{State: "ready", MachineID: "m", SessionID: "main1"}
+	// A room as a manager from before its origin was on the row lists it: a plain Claude Code session in
+	// <state dir>/guest-meeting/<recording id>. And a project of the user's whose path only ends the same way.
+	hub.sessions["oldroom"] = &fakeSession{id: "oldroom", status: "idle", look: func(s *proto.Session) {
+		s.Agent, s.Cwd = "claude", "/home/me/.persona/guest-meeting/0d6f5f8e-2b1c-4c39-9a51-7e0c2f9d4b11"
+	}}
+	hub.sessions["lookalike"] = &fakeSession{id: "lookalike", status: "idle", look: func(s *proto.Session) {
+		s.Agent, s.Cwd = "claude", "/home/me/src/guest-meeting/0d6f5f8e-2b1c-4c39-9a51-7e0c2f9d4b11"
+	}}
 	up := boundUpstream(t, false)
 	pl := testPlugin(t, liveProvider(up), hub.server(t))
 	for _, c := range []struct {
@@ -133,6 +151,7 @@ func TestMeetingCallRefusals(t *testing.T) {
 		{"no recording", meetingStart("", "room1", nil), codeNotMeetingRoom},
 		{"protocol 1", meetingStart("rec1", "room1", map[string]any{"protocol": 1}), codeNotMeetingRoom},
 		{"an ordinary call to the room", boundStart("room1", nil), codeMeetingRoom},
+		{"an ordinary call to a room listed without its origin", boundStart("oldroom", nil), codeMeetingRoom},
 		{"another mode", boundStart("room1", map[string]any{"mode": "lecture", "recording_id": "rec1"}), codeMeetingRoom},
 	} {
 		a := dialApp(t, pl, c.start)
@@ -156,6 +175,10 @@ func TestMeetingCallRefusals(t *testing.T) {
 	// An ordinary call to any other conversation is as it was.
 	a = dialApp(t, pl, boundStart("main1", nil))
 	if ready := a.until(ofType("ready")); ready["target"].(map[string]any)["kind"] != "main" {
+		t.Fatalf("ready: %v", ready)
+	}
+	a = dialApp(t, pl, boundStart("lookalike", nil))
+	if ready := a.until(ofType("ready")); ready["target"].(map[string]any)["kind"] != "agent" {
 		t.Fatalf("ready: %v", ready)
 	}
 }
@@ -346,5 +369,103 @@ func TestMeetingCallResumes(t *testing.T) {
 	if !strings.Contains(second, "Alex: And the pricing?") || !strings.Contains(second, "in a meeting") ||
 		strings.Contains(second, "kiwi-just-me-48") || strings.Contains(second, "quagga-note-17") {
 		t.Fatalf("after the drop:\n%s", second)
+	}
+}
+
+// A meeting call reads no marks: a delegation that starts with 「状态：」, 「停止：」 or 「回答：」 goes to the room as
+// the question it is, word for word. A status would say the room's last turn (a batch's, a heard ask's), which this
+// call did not hand over, and a stop would cut the room's work on the meeting short.
+func TestMeetingCallReadsNoMarks(t *testing.T) {
+	hub := roomHub(t)
+	hub.reply = func(string) string { return "Noted." }
+	up := boundUpstream(t, true)
+	pl := testPlugin(t, Config{Owner: "Alex", Providers: []Provider{{ID: "rt", URL: up.url(), Models: []string{"m1"}, Tools: new(true)}}},
+		hub.server(t))
+	a := dialApp(t, pl, meetingStart("rec1", "room1", nil))
+	a.until(ofType("ready"))
+	hub.status("room1", "working")
+	for i, task := range []string{"状态：到哪了", "停止：先别说了", "回答：用第二个方案", "Status: where are we?"} {
+		a.send(map[string]any{"type": "text", "text": task})
+		if m := hub.waitSent(i + 1); m.Session != "room1" || m.Text != task {
+			t.Fatalf("%q went as %+v", task, m)
+		}
+	}
+	hub.mu.Lock()
+	stopped := slices.Clone(hub.interrupts)
+	hub.mu.Unlock()
+	if len(stopped) != 0 {
+		t.Fatalf("the room was stopped: %v", stopped)
+	}
+}
+
+// A Talk span the app never closes is closed by the extension past talkMost: the upstream hears its silence again
+// even while the app sends nothing, the app's audio after that is dropped, and the next talk{on} opens a span as ever.
+func TestMeetingTalkSpanIsCapped(t *testing.T) {
+	setVar(t, &talkMost, 400*time.Millisecond)
+	hub := roomHub(t)
+	up := boundUpstream(t, false)
+	pl := testPlugin(t, liveProvider(up), hub.server(t))
+	logs := captureLog(t, pl)
+	a := dialApp(t, pl, meetingStart("rec1", "room1", nil))
+	a.until(ofType("ready"))
+	got := func(want []byte) int {
+		return len(slices.DeleteFunc(up.upAudio(), func(b []byte) bool { return !bytes.Equal(b, want) }))
+	}
+	send := func(b []byte) { _ = a.c.Write(t.Context(), websocket.MessageBinary, b) }
+	inside, late, again := pcm(640, 1212), pcm(640, 3434), pcm(640, 5656)
+	a.send(map[string]any{"type": "talk", "on": true})
+	send(inside)
+	waitFor(t, "the span's audio", func() bool { return got(inside) == 1 })
+	logs.wait("talk 1: no talk off after", "1 frames of audio: closed, the upstream hears silence until the next talk on")
+	n := len(up.upAudio())
+	waitFor(t, "silence after the span was closed", func() bool {
+		audio := up.upAudio()
+		return len(audio) > n+2 && silent(audio[len(audio)-1])
+	})
+	send(late)
+	a.send(map[string]any{"type": "talk", "on": false}) // the off that was lost, late: nothing to close
+	a.send(map[string]any{"type": "talk", "on": true})
+	send(again)
+	a.send(map[string]any{"type": "talk", "on": false})
+	waitFor(t, "the next span's audio", func() bool { return got(again) == 1 })
+	if got(late) != 0 {
+		t.Fatal("audio after the closed span went to the upstream")
+	}
+	logs.wait("the app sent audio outside a Talk span (640 bytes): dropped")
+	logs.wait("talk 2: off after", "1 frames of audio")
+	_ = a.c.CloseNow()
+	logs.wait("conversation closed", "talk spans 2 (1 closed past 400ms), audio frames 2 (outside a span 1)")
+}
+
+// The room's snapshot keeps the owner's own questions and the room's words after each, up to the next message: a
+// reply to a batch, a photo or a heard ask goes with what it answered, and so does one whose question is before the
+// window or was cut off it.
+func TestRoomRecentPairsTheReplies(t *testing.T) {
+	meeting := &proto.MessageSource{Kind: proto.SourceMeeting}
+	own := func(text string) proto.Item { return proto.Item{Role: "user", Kind: proto.KindText, Text: text} }
+	reply := func(text string) proto.Item { return proto.Item{Role: "assistant", Kind: proto.KindText, Text: text} }
+	items := []proto.Item{
+		reply("orphan-1"), // its question is before the window
+		own("Q1"), reply("A1"),
+		{Role: "user", Kind: proto.KindText, Text: "New lines", Source: meeting}, reply("batch-2"),
+		{Role: "user", Kind: proto.KindText, Text: "A photo", Source: meeting}, reply("photo-3"),
+		own("Q2"), {Role: "assistant", Kind: proto.KindToolUse, ToolName: "meeting_topics_set"}, reply("A2"),
+		{Role: "user", Kind: proto.KindText, Text: "Sam asks", Source: meeting}, reply("ask-4"),
+	}
+	var lines []string
+	for _, l := range roomRecent(i18n.En, items) {
+		lines = append(lines, l.Role+":"+l.Text)
+	}
+	if want := []string{"user:Q1", "assistant:A1", "user:Q2", "assistant:A2"}; !slices.Equal(lines, want) {
+		t.Fatalf("recent %v, want %v", lines, want)
+	}
+	// Cut to recentMost: a reply whose question went is left out with it.
+	items = []proto.Item{own("Q0"), reply("A0a"), reply("A0b")}
+	for i := range (recentMost - 2) / 2 {
+		items = append(items, own(fmt.Sprintf("Q%d", i+1)), reply(fmt.Sprintf("A%d", i+1)))
+	}
+	recent := roomRecent(i18n.En, items)
+	if len(recent) != recentMost-2 || recent[0].Text != "Q1" {
+		t.Fatalf("cut: %v", recent)
 	}
 }

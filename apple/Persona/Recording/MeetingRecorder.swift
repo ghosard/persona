@@ -120,10 +120,12 @@ import UserNotifications
         attendance.room && attendance.sentRole == .participant && !VoiceCapture.simulator
     }
 
-    /// The activity's Talk (#3862 phase 4): a tap opens a talk window, another ends it.
-    func talk(recordingID: String?) {
+    /// The activity's Talk and Done (#3862 phase 4): `open` is what the button showed (Talk: true, Done: false; nil from an
+    /// activity drawn before it said). Talk opens a talk window, Done ends the open span; a tap that no longer matches
+    /// what is open does nothing (`MeetingCallRule.activityTap`).
+    func talk(recordingID: String?, open: Bool?) {
         guard let id = capture.recordingID, recordingID == nil || recordingID == id.uuidString else { return }
-        MeetingCall.shared.toggleWindow(id)
+        MeetingCall.shared.activityTap(id, open: open)
         Haptics.tap()
     }
 

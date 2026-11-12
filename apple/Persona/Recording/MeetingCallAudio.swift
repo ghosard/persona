@@ -10,13 +10,20 @@ import os
 // (`RecordingCapture.callPlayer`), so the system's echo cancellation, when the recording asked for it, takes it out of
 // what the microphone records.
 
-/// The recorder's audio as Talk hears it (#3862 phase 4): every buffer of the tap (16 kHz mono float) goes to the meeting
-/// call's uplink as PCM16, when there is a call, and its loudness is kept for the talk window's silence. Called on the
-/// audio thread; the main actor connects and reads it.
+/// The recorder's audio as Talk hears it (#3862 phase 4): of every buffer of the tap (16 kHz mono float), the samples inside
+/// the open Talk span go to the meeting call's uplink as PCM16, when there is a call, and its loudness is kept for the
+/// talk window's silence. A buffer reaches the tap only once it is full (100 to 400 ms), so the span is placed on the
+/// buffers' own clock (`RecordingCapture.listenPosition` at the press and the release), not on when they arrive: the
+/// part of a buffer from before the press stays out, and the buffer that holds the release still sends its part before
+/// `talk off` goes (`covers`). Called on the audio thread; the main actor connects, opens and closes it.
 nonisolated final class MeetingTalkTap: @unchecked Sendable {
     private let lock = NSLock()
     private var uplink: VoiceUplink?
     private var db: Float = MeetingTalkTap.quiet
+    /// The span on the buffers' clock: from `start`, up to `end` once it is let go; nil outside one.
+    private var span: (start: Double, end: Double?)?
+    /// Where the newest buffer it has sent from (or passed over) ends, on that clock.
+    private var through = -Double.infinity
 
     /// The level of no sound at all.
     static let quiet: Float = -160
@@ -29,18 +36,56 @@ nonisolated final class MeetingTalkTap: @unchecked Sendable {
     /// The newest buffer's level, dBFS.
     var level: Float { lock.withLock { db } }
 
-    /// One buffer of the recording's audio, as the tap converted it.
-    func feed(_ buffer: AVAudioPCMBuffer) {
+    /// A span sent to the call opens at `start` (seconds on the buffers' clock).
+    func open(at start: Double) {
+        lock.withLock { span = (start, nil) }
+    }
+
+    /// The span is let go at `end`: nothing after it goes, whatever buffer it is in.
+    func close(at end: Double) {
+        lock.withLock {
+            guard let open = span else { return }
+            span = (open.start, max(open.start, end))
+        }
+    }
+
+    /// No span any more (its `talk off` went).
+    func clear() {
+        lock.withLock { span = nil }
+    }
+
+    /// The buffers up to `position` have been through the tap (what of them was the span's has gone up).
+    func covers(_ position: Double) -> Bool {
+        lock.withLock { through >= position }
+    }
+
+    /// One buffer of the recording's audio, as the tap converted it, whose first sample lies at `position`.
+    func feed(_ buffer: AVAudioPCMBuffer, at position: Double) {
         guard let channel = buffer.floatChannelData?[0], buffer.frameLength > 0 else { return }
-        let samples = UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength))
+        let count = Int(buffer.frameLength)
+        let rate = buffer.format.sampleRate
+        let samples = UnsafeBufferPointer(start: channel, count: count)
         let level = Self.level(samples)
-        let uplink = lock.withLock { () -> VoiceUplink? in
+        let (uplink, span) = lock.withLock { () -> (VoiceUplink?, (start: Double, end: Double?)?) in
             db = level
-            return self.uplink
+            return (self.uplink, self.span)
         }
         // Converted only for a span (the uplink checks again under its own lock, and resamples it to the call's rate).
-        guard let uplink, uplink.isTalking else { return }
-        uplink.push(Self.pcm16(samples), rate: Int(buffer.format.sampleRate))
+        if let uplink, let span, uplink.isTalking,
+           let range = Self.inside(start: span.start, end: span.end, position: position, count: count, rate: rate) {
+            uplink.push(Self.pcm16(UnsafeBufferPointer(rebasing: samples[range])), rate: Int(rate))
+        }
+        // After the push: whoever waits on `covers` to send `talk off` sends it behind this buffer's part.
+        lock.withLock { through = max(through, position + Double(count) / rate) }
+    }
+
+    /// Which of a buffer's `count` samples at `rate`, the first at `position`, lie in [`start`, `end`) (no `end`: the span
+    /// is still held); nil when none do. A sample belongs to the span from where it was captured, to the nearest sample.
+    static func inside(start: Double, end: Double?, position: Double, count: Int, rate: Double) -> Range<Int>? {
+        func index(_ at: Double) -> Int { min(count, max(0, Int(((at - position) * rate).rounded()))) }
+        let lo = index(start)
+        let hi = end.map(index) ?? count
+        return lo < hi ? lo..<hi : nil
     }
 
     /// Float samples in [-1, 1] as little-endian PCM16, clipped.

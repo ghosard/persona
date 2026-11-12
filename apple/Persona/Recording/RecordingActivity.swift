@@ -21,8 +21,10 @@ import OSLog
     private var shown: (id: UUID, content: Content)?
     /// When `shown` went to the system: a new line or topic waits until `throttle` after it.
     private var sentAt: Date?
-    /// The latest answer and when this phone first had it: the third line is the answer for `answerShown` after it came.
-    private var answerSeen: (id: UUID, at: Date)?
+    /// Each source's latest answer (the room's asks, the meeting call's voice) and when this phone first had it, for the
+    /// recording `answersOf`: the third line is the newer one for `answerShown` after it came.
+    private var answersSeen: [AnswerSource: (key: String, at: Date)] = [:]
+    private var answersOf: UUID?
     /// A sync due later (a held line or topic, an answer giving way to the line), and when.
     private var wake: (task: Task<Void, Never>, at: Date)?
     private let log = Logger(subsystem: "persona", category: "recording-activity")
@@ -55,19 +57,29 @@ import OSLog
         let now = Date.now
         // Read here, so the activity follows them: an older manager took the room meeting with Persona off (#3862), and
         // the room's topics (phase 2; in the background, without `meeting_live`, read after the lines went:
-        // `MeetingConversation.liveAccepted`). Just me never reaches the activity: its answers aren't `MeetingAsk`'s.
+        // `MeetingConversation.liveAccepted`). The answer is the newer of the room's latest ask and what the meeting call
+        // said last (#3862 phase 4: Talk and typed questions go to the call while it is live). Just me never reaches the
+        // activity: its answers are neither.
         let roomMissing = RecordingSync.shared.roomMissing.contains(id)
-        let answered = MeetingAsk.shared.exchanges(for: id).last(where: { $0.answer != nil })
-        if let answered, answerSeen?.id != answered.id { answerSeen = (answered.id, now) }
+        if answersOf != id {
+            answersOf = id
+            answersSeen = [:]
+        }
+        let asked = MeetingAsk.shared.exchanges(for: id).last(where: { $0.answer != nil })
+        let said = MeetingCall.shared.answer(for: id)
+        let answered = Self.newest([
+            asked.flatMap { e in e.answer.map { Answer(text: $0, at: seen(.ask, e.id.uuidString, now: now)) } },
+            said.map { Answer(text: $0.text, at: seen(.call, $0.id, now: now)) },
+        ])
         let topic = entry.attendance?.liveView == true ? MeetingTopic.current(MeetingConversation.shared.meeting(id).topics)?.title : nil
         // Talk (#3862 phase 4): whether a span is open, read here so the activity follows it at once.
         let talking = MeetingCall.shared.talk?.recording == id
         let content = Self.content(entry: entry, recording: state == .recording, interrupted: interrupted,
                                    elapsed: capture.timeline, previous: previous, now: now,
-                                   answer: answered?.answer, answeredAt: answered == nil ? nil : answerSeen?.at,
+                                   answer: answered?.text, answeredAt: answered?.at,
                                    topic: topic, roomMissing: roomMissing, talking: talking)
         // The answer gives way to the latest line 60 s after it came: looked at again then.
-        if content.answer != nil, entry.attendance?.liveView == true, let at = answerSeen?.at,
+        if content.answer != nil, entry.attendance?.liveView == true, let at = answered?.at,
            at.addingTimeInterval(Self.answerShown) > now {
             wake(at: at.addingTimeInterval(Self.answerShown))
         }
@@ -84,6 +96,27 @@ import OSLog
             shown = (id, content); sentAt = now
             request(id, content)
         }
+    }
+
+    /// Where an answer on the third line came from.
+    enum AnswerSource: Hashable { case ask, call }
+
+    /// An answer and when this phone first had it.
+    nonisolated struct Answer: Equatable {
+        var text: String
+        var at: Date
+    }
+
+    /// The newest of the sources' latest answers (pure, for the tests); the later one wins a tie.
+    nonisolated static func newest(_ answers: [Answer?]) -> Answer? {
+        answers.compactMap { $0 }.reduce(nil) { best, next in best.map { next.at >= $0.at ? next : $0 } ?? next }
+    }
+
+    /// When this phone first had `key` as `source`'s latest answer.
+    private func seen(_ source: AnswerSource, _ key: String, now: Date) -> Date {
+        if let known = answersSeen[source], known.key == key { return known.at }
+        answersSeen[source] = (key, now)
+        return now
     }
 
     /// Syncs again at `date` (or earlier, when a sync is already due before it: that one sets the next).
@@ -194,7 +227,7 @@ import OSLog
     }
 
     private func endAll() {
-        shown = nil; sentAt = nil; answerSeen = nil
+        shown = nil; sentAt = nil; answersSeen = [:]; answersOf = nil
         wake?.task.cancel(); wake = nil
         for activity in Activity<RecordingActivityAttributes>.activities
         where activity.activityState == .active || activity.activityState == .stale {

@@ -423,7 +423,11 @@ see it in the thread at once, then "Used as material", then the room's note on w
 
 The contract's "Phase 4: realtime voice in the meeting" ([meeting-minutes.md](../assistant/meeting-minutes.md)): Talk to
 Persona by voice during a room meeting, with no hub flag of its own. The voice extension says it takes meeting calls with
-`meeting` in its `GET /info` features (`VoiceMeeting.feature`; `VoiceSupport` asks, at most once a minute). The Talk button
+`meeting` in its `GET /info` features (`VoiceMeeting.feature`, from `VoiceSupport`). While a meeting that wants a call
+has none, the phone asks as it starts wanting one, then 30 seconds, 2 minutes and 5 minutes later while the answer says
+nothing either way (the ask failed, the extension isn't running at that moment), and never again for that recording once
+the hub said no (`MeetingCallRule.probeAgain`, `declines`; P9: not once a minute for hours with the screen locked); what
+else asks meanwhile (a spoken answer's route, a chat's voice button) counts too. The Talk button
 and its states are in [DESIGN_SYSTEM.md](../design/DESIGN_SYSTEM.md) "Meeting page (#3862)", the Live Activity's in
 [live-activity.md](live-activity.md) "Recording". The pure rules are `MeetingTalkRules.swift`, the call and Talk
 `MeetingCall`, the audio `MeetingCallAudio`.
@@ -443,50 +447,79 @@ and its states are in [DESIGN_SYSTEM.md](../design/DESIGN_SYSTEM.md) "Meeting pa
   (`VoiceMeeting.retryEvery`) for as long as the meeting records; a call that ended by itself (a fatal `not_meeting_room`,
   a refused handshake but 401 and 403) starts again 30 seconds later while the meeting wants one, unless the end says it
   never can (`MeetingCallRule.retries`: 401, 403, `incompatible`, a model that can't be used). It ends with Stop
-  (`RecordingCapture.onStopping` → `MeetingCall.ended`), another role, the room going, or the extension no longer listing
-  `meeting`. While the recording is paused (by the owner or a call) its socket stays and nothing plays: the player stops
-  with the recorder's engine.
+  (`RecordingCapture.onStopping` → `MeetingCall.ended`), another role, the room going, or the hub saying for sure that
+  its extension no longer takes meeting calls (`MeetingCallRule.declines`: no voice extension, `/info` without
+  `meeting`, `404`, `403`); an ask that failed, or an extension restarting, keeps a running call, whose own `ready` and
+  close decide. While the recording is paused (by the owner or a call) its socket stays and nothing plays: what the voice
+  had queued is dropped, its stretch closes and the voice service is told to stop (`interruptSpeech`), so nothing stale
+  plays after Continue; an answer playing on the recorder's engine (below) stops too.
 - **One capture** (`MeetingCallAudio`, the `VoiceAudio` of a meeting call): the recorder's one input tap, already at 16 kHz,
   feeds the segment writer and, through `RecordingCapture.listen` (`RecordingSegmentWriter.listener`, called on the tap's
-  thread), `MeetingTalkTap`, which hands the call's uplink PCM16 and keeps the newest buffer's level for the talk window.
-  The uplink of a meeting call is gated (`VoiceUplink(gated: true)`): nothing is held before `ready`, nothing goes outside a
-  span, and the `talk` frame goes under the uplink's lock (`VoiceUplink.talk`), so on the socket no buffer of a span is
-  before its `talk on` or after its `talk off`. The voice plays through a player node on the recorder's own engine
+  thread, with where each buffer's first sample lies on the timeline), `MeetingTalkTap`, which hands the call's uplink
+  PCM16 and keeps the newest buffer's level for the talk window. A buffer reaches the tap only once it is full (100 to
+  400 ms), so the span is placed by where its samples were captured, not when they arrive: the press and the release are
+  `RecordingCapture.listenPosition` (the timeline plus what the tap's next buffer has gathered so far,
+  `RecordingSegmentWriter.elapsedNow`), only the samples between them go up, and `talk off` waits for the buffer that
+  holds the release (at most 0.6 s, `MeetingCall.tailWait`). The uplink of a meeting call is gated
+  (`VoiceUplink(gated: true)`): nothing is held before `ready`, nothing goes outside a span, and the `talk` frame goes
+  under the uplink's lock (`VoiceUplink.talk`), so on the socket no buffer of a span is before its `talk on` or after its
+  `talk off`. The voice plays through a player node on the recorder's own engine
   (`RecordingCapture.callPlayer`, attached before the engine first starts for every room meeting, `callFormat` 24 kHz mono
   float, a call at another rate resampled), behind the phone call's jitter buffer (`VoicePlayout`), so the system's echo
-  cancellation takes it out of the microphone. A recording of any other kind gets no player and no listener: notes,
+  cancellation takes it out of the microphone. Beside it a second player (`RecordingCapture.answerPlayer`) takes
+  Persona's other spoken answers in the realtime voice (`MeetingVoicePlayer`, the extension's `speak`: an ask about what
+  was just said, Talk without a call), resampled to 24 kHz when they come at another rate, so they are echo-cancelled too;
+  while the recorder's engine is paused an answer gets an engine of its own, as before. The on-device voice
+  (`AVSpeechSynthesizer`) still plays outside that I/O: it isn't in the echo canceller's reference, and its stretch
+  (below) is what keeps its echo out of the transcript. A recording of any other kind gets no player and no listener: notes,
   all-day and rolling recordings, #3746 meetings and the watch are as they were.
 - **Echo** (`MeetingRecorder.echoCancellation`): a room meeting that starts as `participant` asks for voice processing on
   the recorder's input as recording starts (`RecordingCapture.start(…, echoCancellation:)`,
   `RecordingSegmentWriter.voiceProcessing`), and never switches it while it records, whatever the role does later; where it
   won't turn on, or the engine won't start with it, the recording goes on without (as the phone call's audio does), and
   `echo_cancellation` says `false`. Not on the simulator, where voice processing doesn't run (docs/assistant/voice.md 6.4).
-  Either way every stretch the call's voice plays in, half a second wider each side (`RecordingSpan.widened`,
-  `echoMargin`), joins `RecordingAttendance.spoken`, so a sentence at least half inside one leaves the transcript, the
-  upload and the live log, as #2981 has it for spoken answers; one transcribed while the voice still plays is checked
-  against the open stretch (`MeetingCall.openSpan`, beside `MeetingSpeaker.openSpan`).
-- **Talk** (`MeetingCall.beginTalk` / `endTalk`): offered while a room meeting Persona can be asked in records
-  (`MeetingCallRule.talkOffered`, listener or participant, not paused). Held on the page; on the Lock Screen and in the
-  island a tap opens a talk window (`TalkInMeetingIntent`, `MeetingCall.toggleWindow`), which ends on another tap, on 2
-  seconds of silence after speech, after 20 seconds without speech or after 60 seconds (`MeetingTalkWindow`, ticking every
-  100 ms on the tap's level; a buffer at -40 dBFS or louder is speech). A span opening stops what Persona is saying (the
+  Voice processing ducks every other sound the phone plays by default, heavily: the recorder sets the least ducking and
+  no advanced ducking (`voiceProcessingOtherAudioDuckingConfiguration`, iOS 17), so an answer in the on-device voice
+  still plays at its level. Either way every stretch the call's voice or a spoken answer (`MeetingSpeaker`) plays in, half
+  a second wider each side (`RecordingSpan.widened`, `echoMargin`), joins `RecordingAttendance.spoken`, so a sentence at
+  least half inside one leaves the transcript, the upload and the live log, as #2981 has it for spoken answers; one
+  transcribed while the voice still plays is checked against the open stretch (`MeetingCall.openSpan`,
+  `MeetingSpeaker.openSpan`).
+- **Talk** (`MeetingCall.beginTalk` / `endTalk`, from a `MeetingTalkSource`): offered while a room meeting Persona can be
+  asked in records (`MeetingCallRule.talkOffered`, listener or participant, not paused). Held on the page; a hold also
+  ends when the page's Talk leaves the screen with the finger still down (Just Me turned on, the page left, a word typed:
+  `MeetingTalkButton`'s disappear, `MeetingCall.endHold`), at the Live Activity's Done, and after 60 seconds whatever the
+  finger does (`MeetingCall.longestHold`). On the Lock Screen and in the island a tap opens a talk window
+  (`TalkInMeetingIntent`, `MeetingCall.activityTap`), which ends on Done, on 2 seconds of silence after speech, after 20
+  seconds without speech or after 60 seconds (`MeetingTalkWindow`, ticking every 100 ms on the tap's level; a buffer at
+  -40 dBFS or louder is speech). The activity's buttons carry what they showed (`open`: Talk true, Done false), and
+  `MeetingCallRule.activityTap` acts only on a tap that matches what is open: Talk opens a window when no span is, Done
+  ends any open span (a window, or a hold the page lost), and a Done tapped just after the window closed on its own
+  opens nothing. VoiceOver on the page opens a window too (`pageWindow`). A span opening stops what Persona is saying (the
   call's voice, a spoken answer). With the call live, the span is `talk on`, its audio, `talk off`; the call's answer comes
-  as captions and its voice, and in the room's thread as the room's turn. Without it (a listener, no `meeting`, the call
-  connecting, reconnecting or down), the segment is cut at the span's start and end (`RecordingCapture.flushSegment`), the
+  as captions and its voice, and in the room's thread as the room's turn. A Lock Screen window before the owner was told
+  what Talk sends (`MeetingTalkPrivacy`, below) goes without the call (`MeetingCallRule.toCall`): those surfaces don't
+  show the Wording. A span the call loses midway (its socket dropped, the call ended) goes on without it
+  (`MeetingCall.Talk.lost`): the segment is cut there, and on release the whole span is asked. Without it (a listener, no
+  `meeting`, the call connecting, reconnecting or down), the segment is cut at the span's start and end
+  (`RecordingCapture.flushSegment`, also while paused, `cutsOnFlush`), the
   span is transcribed on the phone as every segment is, and once its segments have their text (at most 12 s) the
   sentences at least half inside it (`MeetingTalkWords.question`) go as a spoken question: `…/ask` with `question` and
   `spoken: true` (`MeetingAsk.ask(_:text:spoken:)`), answered as any ask (aloud for a participant, `MeetingSpeaker`). Let
   go in under half a second, the page says to hold Talk while speaking; a span asked without the call that held no words
   says Persona heard nothing. A span closes with the recording's pause or the role going off (what was said is still
-  asked); Stop drops it.
+  asked: the pause's open segment is cut while paused); Stop drops it.
 - **Typed questions** go as the call's `text` frame while it is live (`MeetingCall.say`; the fast layer hands them to the
   room, and the answer comes in the room's thread), otherwise through `…/ask` as before; the room's one-question-at-a-time
   rule is the asks', not the call's.
 - **The privacy texts**: where Talk sends its spans to the voice service, a room meeting taking part on a hub whose voice
   extension takes meeting calls (`MeetingCallRule.talkSendsAudio`), the line under Record and Talk's first-use note (and
   its spoken hint) say "Audio stays on this iPhone, except while you hold Talk: what is said then goes to the voice
-  service." (the contract's Wording). The note shows under the composer until the first span went to the call
-  (`MeetingTalkPrivacy`, written once). Everywhere else the texts are as before: a listener's Talk stays on the phone.
+  service." (the contract's Wording). The note shows under the composer until a span went to the call while the page
+  showed it (the note under Talk as the finger went down, or Talk's spoken hint for VoiceOver's window;
+  `MeetingTalkPrivacy`, written once); a Lock Screen window never marks it. Everywhere else the texts are as before: a
+  listener's Talk stays on the phone. Record's Siri and Shortcuts description (`StartMeetingRecordingIntent`) says the
+  Wording too, since it may start a meeting with Talk.
 - **No voice in a room opened as a chat**: a conversation whose origin is `meeting` offers no Voice Chat
   (`VoiceAvailability.meetingRoom`; the + menu's item says to hold Talk on the meeting's page), since the extension refuses
   an ordinary call bound to a room (`meeting_room`).
@@ -500,14 +533,20 @@ and its states are in [DESIGN_SYSTEM.md](../design/DESIGN_SYSTEM.md) "Meeting pa
   (`scripts/mock/voice_meeting_mock.py`: `meeting` in the features, the start checked against its room, audio counted
   inside and outside spans, an answer after each span in the room's thread; `GET /mock/voice_meeting`, `?meeting=off` an
   extension from before phase 4). UI tests `MeetingTalkUITests` (a held Talk reaches the call inside its span only and its
-  answer the thread; Talk held and the Lock Screen's talk window; a listener's Talk asked through `…/ask` as `spoken`; the
+  answer the thread, the first-use note gone after it; Talk held and the Lock Screen's talk window, a Done after the
+  window closed opening no other span and no audio outside spans; a listener's Talk asked through `…/ask` as `spoken`; the
   start's privacy line with and without meeting calls; shots `talk-<appearance>-page|speaking|answered|held|lock-before|lock|listener-asked|start`).
   `MeetingConversationUITests` and `MeetingLiveViewUITests` switch the mock's meeting calls off, so their questions keep
-  going through `…/ask`. Unit tests `MeetingCallTests` (who has a call, the extension's feature, where Talk is and where it
-  sends audio, which ends start again, the start frame, the talk frames, a `ready` without `meeting`, only the span's
-  audio going up and in order, a drop ending the span, the tap's PCM16 and level, reconnecting every 30 s, no idle end, the
-  talk window's four ends, the span's words, a spoken ask on the wire, the voice's stretch leaving the transcript, the Live
-  Activity's Talk, no voice in a room opened as a chat).
+  going through `…/ask`. Unit tests `MeetingCallTests` (who has a call, the extension's feature, only a definite no ending
+  a running call, asking for meeting calls stopping, where Talk is and where it sends audio, which ends start again, the
+  start frame, the talk frames, a `ready` without `meeting`, only the span's audio going up and in order, a drop ending the
+  span, the tap's PCM16 and level, only the samples inside the span with buffers straddling the press and the release, a
+  span the call loses asked without it, a paused recording still cutting the span's segment, reconnecting every 30 s, no
+  idle end, the talk window's four ends, the activity's tap doing what its button showed, a Lock Screen window going to
+  the call only once the owner was told, the span's words, a spoken ask on the wire, the voice's stretch leaving the
+  transcript, the Live Activity's Talk, the Lock Screen showing the call's answer, a call keeping its latest answer, no
+  voice in a room opened as a chat); `MeetingSpeakerTests` (an answer's stretch half a second wider, a voice resampled
+  for the recorder's player).
 
 ## All-day recording (Apple)
 

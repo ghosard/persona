@@ -7,7 +7,8 @@ import SwiftUI
 /// solid button. A capsule in the composer's ink with its icon and its word (only the icon at accessibility sizes, where
 /// the row under the field holds icons). Held, it takes Persona's color and grows a little (not under Reduce Motion), and
 /// the words over the field say Persona hears (`MeetingPageBar`). VoiceOver can't hold: a double tap opens a talk, as the
-/// Lock Screen's tap does, and another ends it. Its hint says where the words go.
+/// Lock Screen's tap does, and another ends it. Its hint says where the words go. Taken off the screen while held (Just
+/// Me, the page left, a word typed with another finger), it ends the hold: the finger's lift would never reach it.
 struct MeetingTalkButton: View {
     /// A span is open from this button.
     var held: Bool
@@ -17,6 +18,8 @@ struct MeetingTalkButton: View {
     var release: () -> Void
     /// VoiceOver's double tap: a talk window, which ends on its own or on the next double tap.
     var window: () -> Void
+    /// The button left the screen: a hold still open ends (a window stays).
+    var gone: () -> Void
 
     @Environment(\.buiTheme) private var theme
     @Environment(\.dynamicTypeSize) private var size
@@ -30,6 +33,7 @@ struct MeetingTalkButton: View {
             .contentShape(.capsule)
             .gesture(DragGesture(minimumDistance: 0).updating($touching) { _, state, _ in state = true })
             .onChange(of: touching) { _, down in down ? press() : release() }
+            .onDisappear { gone() }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(Text("Talk [Meeting Talk]"))
             .accessibilityValue(held ? Text("Listening to you…") : Text(verbatim: ""))

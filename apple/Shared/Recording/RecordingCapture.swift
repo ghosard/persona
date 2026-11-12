@@ -99,7 +99,7 @@ final class RecordingCapture {
     /// never switched while it records (`start.echo_cancellation` of its call says so).
     @ObservationIgnored private(set) var cancelsEcho = false
     /// Who hears the converted audio besides the files (`listen`).
-    @ObservationIgnored private var listener: (@Sendable (AVAudioPCMBuffer) -> Void)?
+    @ObservationIgnored private var listener: (@Sendable (AVAudioPCMBuffer, Double) -> Void)?
     @ObservationIgnored private var writer: RecordingSegmentWriter?
     @ObservationIgnored private var ticker: Task<Void, Never>?
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
@@ -357,23 +357,51 @@ final class RecordingCapture {
     /// a made-up recording).
     var callPlayer: AVAudioPlayerNode? { writer?.callPlayer }
 
+    /// The player of Persona's other spoken answers on the recorder's engine, beside the call's (`MeetingVoicePlayer`), so
+    /// voice processing takes them out of the microphone too and doesn't duck them; nil where there is no call player.
+    var answerPlayer: AVAudioPlayerNode? { writer?.answerPlayer }
+
     /// Whether the engine runs now: a paused recording's player stops with it.
     var engineRunning: Bool { writer?.isRunning == true }
 
+    /// Whether a notification's object (`.AVAudioEngineConfigurationChange`) is the recorder's own engine.
+    func ownsEngine(_ object: ObjectIdentifier?) -> Bool { writer?.owns(object) == true }
+
     /// `sink` hears every buffer of the recording's audio as it is converted (16 kHz mono float), on the audio thread,
-    /// besides the files: a meeting call's Talk spans and the talk window's silence (#3862 phase 4). One listener; nil
-    /// stops it. It stays for the next recording until it is taken away.
-    func listen(_ sink: (@Sendable (AVAudioPCMBuffer) -> Void)?) {
+    /// besides the files, with where its first sample lies (seconds, on `listenPosition`'s clock): a meeting call's Talk
+    /// spans and the talk window's silence (#3862 phase 4). One listener; nil stops it. It stays for the next recording
+    /// until it is taken away.
+    func listen(_ sink: (@Sendable (AVAudioPCMBuffer, Double) -> Void)?) {
         listener = sink
         writer?.listener = sink
     }
 
+    /// Where what the microphone takes at this moment will lie, on the clock of the listener's positions (`listen`): the
+    /// recording's timeline plus what the tap's next buffer has gathered so far (`RecordingSegmentWriter.elapsedNow`).
+    /// Talk's press and release, so a buffer's samples from before the press stay out of the span (#3862 phase 4).
+    var listenPosition: Double {
+        #if DEBUG
+        if writer == nil, recordingID != nil {
+            return sampleFed + min(RecordingSegmentWriter.longestBuffer, max(0, Date.now.timeIntervalSince(sampleFedAt)))
+        }
+        #endif
+        return writer?.elapsedNow ?? timeline
+    }
+
     #if DEBUG
+    /// The made-up audio handed to the listener so far (`feedSample`), seconds, and when the newest of it came: its
+    /// positions, which a made-up recording's clock (it stands still) can't give.
+    @ObservationIgnored private var sampleFed: Double = 0
+    @ObservationIgnored private var sampleFedAt = Date.distantPast
+
     /// A made-up recording's audio (`-showMeetingSample room-…`): canned PCM handed to the listener as the tap would,
     /// so Talk works with no microphone.
     func feedSample(_ buffer: AVAudioPCMBuffer) {
         guard isSample, state == .recording else { return }
-        listener?(buffer)
+        let at = sampleFed
+        sampleFed += Double(buffer.frameLength) / buffer.format.sampleRate
+        sampleFedAt = .now
+        listener?(buffer, at)
     }
 
     /// A made-up recording is being recorded (`showSample`): no microphone, no files.
@@ -446,11 +474,16 @@ final class RecordingCapture {
     }
 
     /// Closes the segment being written and goes on in a new one, so what was just said is transcribed now rather than
-    /// at the segment's end (#2981: asking Persona about it).
+    /// at the segment's end (#2981: asking Persona about it). Paused too (`cutsOnFlush`): a Talk span the pause closed is
+    /// asked with what was said in it (#3862 phase 4), and the pause's own segment would wait for the Continue.
     func flushSegment() {
-        guard state == .recording, let writer, writer.cut() != nil else { return }
+        guard Self.cutsOnFlush(state), let writer, writer.cut() != nil else { return }
         applyWriterEvents()
     }
+
+    /// Whether `flushSegment` cuts in `state`: while recording, and while paused (the writer has stopped taking audio, and
+    /// what it wrote before the pause is all in the open segment, as an interruption's cut has it).
+    static func cutsOnFlush(_ state: State) -> Bool { state == .recording || state == .paused }
 
     /// A bookmark. In all-day recording it is a `mark` event on the wall clock; otherwise on the timeline.
     func addMark() {
