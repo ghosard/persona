@@ -274,9 +274,10 @@ A view that fetches once per id cannot recover when the store puts the same id b
 - Each row of the session list whose transcript path was found more than 30 seconds ago is looked up again
   (`findTranscriptPath`), and each lookup globbed `<projects>/*/<id>.jsonl`: Go's `filepath.Glob` reads and sorts every
   project directory to match one name, so a lookup costs a read of the whole tree (66 ms for 2,600 directories and
-  37,000 transcripts). A chat bridge kept 567 parked compatible-CLI threads listed: one rebuild took 41 s, longer than
-  the 30 s the found paths were trusted for, so every rebuild found them all expired again and the cache never hit. Five
-  rebuild sources overlapped, and the node used four cores, half of it in the kernel reading directories.
+  27,000 transcripts). A chat bridge kept 567 compatible-CLI threads listed; with 58 live Claude sessions that was 625
+  lookups, 41 s a rebuild, longer than the 30 s the found paths were trusted for, so every rebuild found them all expired
+  again and the cache never hit. Five rebuild sources overlapped, and the node used up to four cores, half of it in the
+  kernel reading directories.
 - Below the threshold (rows × lookup < trust window) the cost is near zero; above it it jumps to the full price. Check
   per-row work against the list's real size, not a dozen test rows.
 - A rollout (Codex, the compatible CLI) has no copy in Claude's projects directories: once found it stays the thread's
