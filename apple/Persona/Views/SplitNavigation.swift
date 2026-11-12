@@ -235,8 +235,8 @@ enum SplitColumns {
 /// The list column's width. iPad (and a Mac window): wider than the system's sidebar, which is narrow for the agents'
 /// cards (they wrapped every title); dragged on the line beside it (`SplitDividerHandle`, #2624), that width. One
 /// expression whatever the width: a modifier coming or going would build the list again (its filters, its scroll).
-/// iPhone Duo: none of our own (the system sizes the columns, and partly folded it moves the divide onto the fold) until
-/// one is kept from a drag; that takes the column once, at the drag's end, never during it.
+/// iPhone Duo: `Theme.Size.sidebarPhone` (ChatGPT's width on the open Duo, #4206; the system's was about 199 pt upright)
+/// until one is kept from a drag; that takes the column once, at the drag's end, never during it.
 struct SidebarWidth: ViewModifier {
     @Environment(\.splitListWidth) private var dragged
 
@@ -246,9 +246,7 @@ struct SidebarWidth: ViewModifier {
                                                    max: dragged ?? Theme.Size.sidebarMax)
                 .background(GeometryReader { g in Color.clear.preference(key: SidebarEdge.self, value: g.frame(in: .global).maxX) })
         } else if UIDevice.current.userInterfaceIdiom == .phone {
-            Group {
-                if let dragged { content.navigationSplitViewColumnWidth(dragged) } else { content }
-            }
+            content.navigationSplitViewColumnWidth(dragged ?? Theme.Size.sidebarPhone)
             // Where the column ends, for the handle on the line beside it.
             .background(GeometryReader { g in Color.clear.preference(key: SidebarEdge.self, value: g.frame(in: .global).maxX) })
         } else {
@@ -302,7 +300,7 @@ struct SplitDetail: Equatable {
 }
 
 extension EnvironmentValues {
-    /// The width the list column was dragged to on the line beside it (#2624, `SplitDividerHandle`); nil: the system's.
+    /// The width the list column was dragged to on the line beside it (#2624, `SplitDividerHandle`); nil: the default (`SidebarWidth`).
     @Entry var splitListWidth: CGFloat?
     @Entry var splitDetail: SplitDetail?
     /// Pushes a page by value onto the stack the view is in (an extension's `push`, docs/extensions/extensions.md「Page navigation」): its
@@ -385,7 +383,7 @@ struct SplitPlaceholder: View {
 
 /// The line between a split's list and its page on iOS (#2624, iPad and iPhone Duo open), as Feishu's: a handle on it
 /// drags the list wider or narrower (`least`…`most`), the page taking the rest; dragged well past the least it closes the
-/// list, and from the page's leading edge it brings the list back; a double tap gives the column back to the system.
+/// list, and from the page's leading edge it brings the list back; a double tap gives the column its default width again.
 /// The width and the closing are remembered under `key` (nil: no handle, the system's column, as before). The column's
 /// own button closes and opens it as well, remembered the same. Not on the Mac or Apple Vision Pro.
 struct SplitDividerHandle: ViewModifier {
@@ -395,7 +393,7 @@ struct SplitDividerHandle: ViewModifier {
     /// page, not a choice to keep it closed. nil: not known yet, nothing is kept until it is; once beside the page, the
     /// state then is kept.
     var overlays: Bool? = false
-    /// The width dragged to; 0: never dragged (or given back), the system's.
+    /// The width dragged to; 0: never dragged (or given back), the default (`SidebarWidth`).
     @StoredValue private var width: Double
     @StoredValue private var closed: Bool
     /// The split's frame (global), and the column's width as last laid out at rest.
@@ -440,10 +438,10 @@ struct SplitDividerHandle: ViewModifier {
     private func fitted(_ w: CGFloat) -> CGFloat { min(max(w, least), most) }
 
     /// The width the list has now: the one kept (fitted to the room there is, which a turn or another window changes),
-    /// else the system's as laid out.
+    /// else the default as laid out.
     private var current: CGFloat { width > 0 ? fitted(CGFloat(width)) : max(least, measured) }
 
-    /// The width the column is given: the one being dragged to, else the one kept; nil: the system's. On iPhone Duo a
+    /// The width the column is given: the one being dragged to, else the one kept; nil: the default. On iPhone Duo a
     /// column with no width yet takes one only when the drag ends (`SidebarWidth`).
     private var applied: CGFloat? {
         if let live, !(phone && width == 0) { return live.width }
@@ -485,7 +483,7 @@ struct SplitDividerHandle: ViewModifier {
             .scaledFrame(width: Theme.Split.handleWidth, height: Theme.Split.handleHeight)
             .contentShape(.rect)
             .gesture(drag)
-            .onTapGesture(count: 2) { width = 0 } // the system's column again
+            .onTapGesture(count: 2) { width = 0 } // the default width again
             .animation(Theme.Motion.standard, value: live?.closing)
             .accessibilityElement()
             .accessibilityLabel(shown ? String(localized: "Resize the list") : String(localized: "Show List"))

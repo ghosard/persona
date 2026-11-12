@@ -28,8 +28,9 @@ final class OneSidebarTests: XCTestCase {
         self.hub = hub
         XCUIDevice.shared.orientation = ProcessInfo.processInfo.environment["PERSONA_ORIENTATION"] == "landscape" ? .landscapeLeft : .portrait
         app = XCUIApplication()
+        // `agents.list.width` 0: the column at its default width, not one SplitDividerTests left dragged.
         app.launchArguments = ["-pairURL", pair, "-tab", "assistant", "-app.tab", "assistant", "-dev.openChat", "",
-                               "-dev.grouping", "repo", "-agents.list.closed", "NO"]
+                               "-dev.grouping", "repo", "-agents.list.closed", "NO", "-agents.list.width", "0"]
     }
 
     override func tearDown() {
@@ -78,6 +79,13 @@ final class OneSidebarTests: XCTestCase {
     }
 
     @MainActor private func element(_ id: String) -> XCUIElement { app.descendants(matching: .any)[id].firstMatch }
+
+    /// The column's width: its list, the collection view at the window's leading edge (as SplitDividerTests reads it).
+    @MainActor private func columnWidth() -> CGFloat {
+        let window = app.windows.firstMatch.frame
+        let list = app.collectionViews.allElementsBoundByIndex.first { $0.frame.minX < window.minX + 40 && $0.frame.width < window.width * 0.7 }
+        return list?.frame.width ?? 0
+    }
 
     /// The buttons in the window's top leading corner that fold the column or bring it back, the page's own or the
     /// system's, that can be tapped there.
@@ -143,6 +151,13 @@ final class OneSidebarTests: XCTestCase {
         XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier == %@ AND label CONTAINS %@", "sidebar-pinned", "等你")).firstMatch.exists,
                       "no direction shows its work")
         XCTAssertLessThan(main.frame.maxX, window.midX + 100, "the column is not on the left")
+        // As wide as ChatGPT's on the open Duo, 320 pt in both postures (`Theme.Size.sidebarPhone`); the iPad's is wider.
+        let width = columnWidth()
+        if duoUpright || duoOnItsSide {
+            XCTAssertEqual(width, 320, accuracy: 4, "the open Duo's column is not 320 pt wide")
+        } else {
+            XCTAssertGreaterThanOrEqual(width, 320, "the iPad's column is narrower than the Duo's")
+        }
         // Beside the page on the iPad and the open Duo on its side, the fold and the page's top on one line (2026-11-11,
         // the owner). Upright on the open Duo the column is over the page instead (#4852): the page keeps its full width.
         let pageNew = element("assistant-new")
@@ -351,9 +366,9 @@ final class OneSidebarTests: XCTestCase {
     /// Upright on the open Duo: an agent picked in the column slides it away (#4852), and ‹ on that agent goes back to
     /// Persona's page, not the column out again (#3641).
     @MainActor func testUprightBackFromAnAgentGoesToPersonasPage() throws {
-        // A column wider than the system's (about 200 pt upright): in that one the Pinned rows take two lines, the filter
-        // chips wrap under the foot and the first Needs You card starts below the first screen, out of a tap's reach.
-        try launch(["-agents.list.width", "340"])
+        // The column at its default 320 pt: in the system's old one (about 200 pt upright) the Pinned rows took two lines,
+        // the filter chips wrapped under the foot and the first Needs You card started below the first screen.
+        try launch()
         guard duoUpright else { throw XCTSkip("the open Duo upright only") }
         // The agents are under the first screen upright, and synthetic drags miss there: the first Needs You card's
         // place, at the column's foot, is tapped (a tap scrolls it in), which opens its agent as its row would.

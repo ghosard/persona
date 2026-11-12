@@ -605,6 +605,10 @@ nonisolated enum Theme {
         static let sidebarMin: CGFloat = 340
         /// The least an iPhone Duo's list column is dragged to (#2624): its open display is narrower than an iPad.
         static let sidebarMinPhone: CGFloat = 200
+        /// The open iPhone Duo's list column until one is dragged (#4206), upright over the page and on its side beside it:
+        /// as wide as ChatGPT's sidebar on the open Duo (320 of its 669 pt upright). The system's own was about 199 pt
+        /// upright and 239 on its side, too narrow for the one sidebar's rows.
+        static let sidebarPhone: CGFloat = 320
         /// What a split's page keeps beside its list column when the list is dragged wider (#2624).
         static let splitDetailMin: CGFloat = 300
         static let sidebar: CGFloat = 400

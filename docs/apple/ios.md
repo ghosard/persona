@@ -637,11 +637,12 @@ Apps built with older Xcode do not extend under the status bar and camera on Duo
 - **The line between the list and the page** (#2624, `SplitDividerHandle`; iPad and open Duo), as Feishu's. Since the one sidebar (#4206) it is the one column's, `agents.list`: Persona's page has no history column of its own there:
   - A short handle on the line drags the list column wider or narrower. The bounds are iPad 340–480 pt and Duo from 200 pt, and the page keeps at least 300 pt; the page takes the rest.
   - Dragged more than 80 pt past the least, the list closes and the handle waits at the page's leading edge; dragged right from there, the list comes back.
-  - Width and closing are remembered per list: `agents.list.width` / `.closed`, `assistant.list.width` / `.closed`. Until dragged, the column is the system's.
-  - The column's own button closes and opens it too, remembered the same. A double tap on the handle gives the column back to the system.
+  - Width and closing are remembered per list: `agents.list.width` / `.closed`, `assistant.list.width` / `.closed`. Until dragged, the column has its
+    default width (`SidebarWidth`): the iPad's 340–480 pt (400 ideal), the open Duo's 320 pt (`Theme.Size.sidebarPhone`, "One sidebar").
+  - The column's own button closes and opens it too, remembered the same. A double tap on the handle gives the column its default width again.
   - The split starts closed when the list was left closed (`SplitDividerHandle.startsClosed`). Only a list beside the page is remembered: laid over it (the open Duo upright, #4852) its going away is a pick's, and nothing is kept until the posture is read (`SplitNavigation.notePosture`, once the list is out at least `sidebarMinPhone` wide; the split's own first layout, a narrow list with the page sliding in, is not read).
   - VoiceOver: adjusting the handle resizes the list by 40 pt, Hide List / Show List close and open it.
-  - `SplitDividerTests` (`-openSplitFresh YES` starts the lists at the system's width).
+  - `SplitDividerTests` (`-openSplitFresh YES` starts the lists at their default width).
 - **Readable width**: chats and the Persona home page are at most 760pt wide (`ChatView.readableWidth`), centered when wider; the top bar still spans the full width.
 - **No screen dimensions**: the screens have different sizes and ratios; never use `UIScreen.main`. The long-press message action bar stays within the chat area (`MessageMenu.area`
   coordinate space); interaction forms have a maximum height of 55% of their container (`containerRelativeFrame`); image scaling uses the view's `traitCollection.displayScale`.
@@ -703,7 +704,11 @@ sidebar. Code in `Persona/Views/OneSidebar.swift`; the column is the Agents list
   `AssistantSidebarGroups.directions` and the direction tree's `directionCounts`; a long press unpins); the Agents heading with the list's ⋯ and New Session, the
   grouping as segments under it (To-do, Machine, Repo, Project, Status: `AgentsGroupingSegments`, the same `dev.grouping` as the ⋯ menu, which still offers
   Recently Used and By App, no segment lit then), then the Agents list. The foot holds New Chat and a capsule with Search (over the whole window, `AssistantFullSearch`, #3705) and Settings.
-  In a narrow column (the open Duo's, on its side and upright) three things give way instead of being cut to "…" (`ViewThatFits`): New Chat shows its icon
+- **The column's width** on the open Duo: 320 pt in both postures, over the page upright and beside it on its side (`Theme.Size.sidebarPhone`,
+  `SidebarWidth`), as wide as ChatGPT's sidebar on the open Duo (320 of the 669 pt upright, measured 2026-11-13). Without a width of our own the system
+  gave about 199 pt upright and 239 pt on its side, and the rows were cut. A width dragged on the handle is kept and wins; a double tap gives 320 back.
+  The iPad's is wider already (340–480 pt, "iPad"). Half-folded, where the system kept the columns off the crease, is not checked with this width.
+  In a column narrow enough (dragged toward its 200 pt least) three things give way instead of being cut to "…" (`ViewThatFits`): New Chat shows its icon
   alone, a Pinned row puts its work under its name, and the segments become the grouping pill (`AgentsGroupingMenu`, which names the chosen grouping and offers the same ones).
 - **Beside it** the detail column shows the agent's chat while one is open, and otherwise its home (`SplitNavigation.home`, `OneSidebarHome`): Persona's page, or
   Messages while its row is the one picked (`selectedTab == .feishu`). Each has its own `NavigationStack`: the home is not a page of the column's stack, since
@@ -740,7 +745,7 @@ sidebar. Code in `Persona/Views/OneSidebar.swift`; the column is the Agents list
   drawer); the page's face keeps its own (Knowledge, Details, Copy Directory, Copy Info). Agent rows keep theirs.
 - **Routes**: `PadRouter` takes Inbox and Settings (see "iPad"). Persona's page is built again each time an agent closes, so the last request it showed is kept
   on the router (`handled`), not on the page, or the page would show it again.
-- Tests: `OneSidebarTests` (the rows, Pinned and All Chats, More, the segments, the open agent's highlight, Messages under More, Settings, Search; upright on the
+- Tests: `OneSidebarTests` (the rows, the column's width (320 pt on the open Duo, at least that on the iPad), Pinned and All Chats, More, the segments, the open agent's highlight, Messages under More, Settings, Search; upright on the
   open Duo, the picks that slide the column away and the filters that don't, and ‹ from an agent back to Persona's page, #3641; iPad, or the open Duo, skipped below
   600pt; the mock hub with `MOCK_LEADERS=1`), `IPadSidebarTests`, `DuoOpenChromeTests` (upright too: the new conversation's Needs You, #3641). Upright on the open
   Duo synthetic drags miss: the tests reach rows under the first screen by tapping (a tap scrolls its element in).
@@ -751,7 +756,7 @@ One App for iPhone and iPad (`TARGETED_DEVICE_FAMILY` 1,2). Previously only 1, g
 
 - Like iPhone Duo, layout follows width: regular (iPad full screen, wider split screen) uses `SplitNavigation` with two columns; compact (narrow split screen / Slide Over) uses one stack.
 - iPad's left column uses `Theme.Size.sidebar` (340…480, ideal 400; system default is too narrow and wraps all Agents-card titles); Persona's chat list does too, preventing width jumps when switching tabs.
-  iPhone Duo sets no width (the system splits at the crease).
+  The open iPhone Duo's is 320 pt (`Theme.Size.sidebarPhone`, "One sidebar").
 - iPad supports all four orientations (required by split screen and Stage Manager); iPhone remains portrait only.
 - The sidebar is the one sidebar (#4206, "One sidebar" below): Persona's places, Pinned and All Chats, and the Agents in one column, no tabs. Inbox and Settings are not tabs:
   routing still writes `AppModel.selectedTab`, and `PadRouter` (`RootView.swift`) maps `.mail` to "Inbox on Persona's page" and `.settings` to "open Settings"
