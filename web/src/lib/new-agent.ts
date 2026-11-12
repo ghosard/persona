@@ -148,6 +148,8 @@ export async function deliverLaunch(id: string, clearDraft?: string) {
       if (!getState().launches[id]) return;
       update({ session });
       upsertSession(session);
+      // one more Agent this browser started, for the GitHub star line (#5761)
+      void import("./star-prompt").then((m) => m.starPromptLaunched());
     }
     if (!launch.outgoing) {
       update({ phase: "uploading" });

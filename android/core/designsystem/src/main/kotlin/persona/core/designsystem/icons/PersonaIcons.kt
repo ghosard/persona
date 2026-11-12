@@ -124,6 +124,8 @@ object PersonaIcons {
     val forward: PhIcon get() = PhIcons.CaretRight
     /** SF Symbol `arrow.triangle.branch`. */
     val gitBranch: PhIcon get() = PhIcons.GitBranch
+    /** SF Symbol `star`. */
+    val gitHubStar: PhIcon get() = PhIcons.Star
     /** SF Symbol `cloud`. */
     val gitUpstream: PhIcon get() = PhIcons.Cloud
     /** SF Symbol `target`. */
