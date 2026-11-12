@@ -287,6 +287,19 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
     /// Its lines are to go on the chat's (`resnap`), once, in its next layout: the words and the chat's lines change
     /// in the same frame, several times as the copy settles.
     private var snapPending = false
+    /// Selecting starts a step a frame (`start`): its words, then their lines on the chat's, then the selection, then
+    /// the menu. On a long answer each takes tens of milliseconds, too long together for one frame (#5291); nothing
+    /// shows before the selection (the words are clear).
+    private let steps = LiftFrames()
+    /// Its words wait for `start`'s first step, and their lines (`resnap`) for the step after.
+    private var wordsHeld = true
+    private var snapHeld = false
+    #if DEBUG
+    /// TEMP #5291: all of it at once, as before, for comparing.
+    private static let atOnce = UserDefaults.standard.bool(forKey: "showLiftSelectAtOnce")
+    #else
+    private static let atOnce = false
+    #endif
     private var begun: UUID?
     /// Something is selected: when that goes, the selecting is over.
     private var picked = false
@@ -333,7 +346,8 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
         source = (text, words)
         self.design = design
         self.parts = parts
-        render(width: laidOut > 0 ? laidOut : wrapWidth)
+        if Self.atOnce { wordsHeld = false }
+        if !wordsHeld { render(width: laidOut > 0 ? laidOut : wrapWidth) }
     }
 
     /// Laid out once its width is known (the width the words were offered, `place`, or its own).
@@ -536,10 +550,11 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
     }
 
     override func layoutSubviews() {
+        guard !wordsHeld else { return super.layoutSubviews() }
         let w = wrapWidth
         if w > 0, abs(w - laidOut) > 0.5, !picked { render(width: w) }
         if keepsAllLaidOut() { snapPending = true }
-        if snapPending {
+        if snapPending, !snapHeld {
             snapPending = false
             #if DEBUG
             LiftTrace.time("resnap parts=\(segments.compactMap(\.part)) rows=\(segments.reduce(0) { $0 + $1.rows.count })") { resnap() }
@@ -548,7 +563,9 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
             #endif
         }
         super.layoutSubviews()
-        if keepsAllLaidOut() { resnap() }
+        if keepsAllLaidOut() {
+            if snapHeld { snapPending = true } else { resnap() }
+        }
         #if DEBUG
         if LiftLines.on { LiftLines.shared.select = LiftLines.lines(of: self, layout: layout) }
         #endif
@@ -612,19 +629,73 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
         return out.isEmpty ? super.selectionRects(for: range) : out
     }
 
-    /// Selects the word at the press (or everything) once the view is in its window, and shows the edit menu.
+    /// Selects the word at the press (or everything) once the view is in its window, and shows the edit menu: a step
+    /// a frame (`steps`).
     func begin(_ select: InPlaceSelect) {
         guard begun != select.id else { return }
         begun = select.id
         picked = false
-        start(select.at, tries: 3)
+        start(select.at, tries: 10)
     }
 
     private func start(_ at: CGPoint?, tries: Int) {
+        if Self.atOnce { return startAtOnce(at, tries: tries) }
+        var tries = tries
+        var range: UITextRange?
+        steps.run { [weak self] in
+            guard let self else { return false }
+            guard window != nil, bounds.width > 0 else {
+                tries -= 1
+                return tries > 0
+            }
+            if wordsHeld { // its words
+                wordsHeld = false
+                snapHeld = true
+                #if DEBUG
+                LiftTrace.time("step: words") { render(width: wrapWidth) }
+                #else
+                render(width: wrapWidth)
+                #endif
+                return true
+            }
+            if snapHeld { // their lines on the chat's
+                snapHeld = false
+                setNeedsLayout()
+                #if DEBUG
+                LiftTrace.time("step: lines") { layoutIfNeeded() }
+                #else
+                layoutIfNeeded()
+                #endif
+                return true
+            }
+            guard let picking = range else { // the selection
+                layoutIfNeeded()
+                guard let r = at.flatMap(word(at:)) ?? textRange(from: beginningOfDocument, to: endOfDocument) else { return false }
+                #if DEBUG
+                LiftTrace.time("step: first responder") { _ = becomeFirstResponder() }
+                #else
+                _ = becomeFirstResponder()
+                #endif
+                selectedTextRange = r
+                picked = !r.isEmpty
+                range = r
+                return true
+            }
+            #if DEBUG
+            LiftTrace.time("step: menu") { showMenu(for: picking) } // the menu
+            #else
+            showMenu(for: picking)
+            #endif
+            return false
+        }
+    }
+
+    /// TEMP #5291: as before, for comparing (`atOnce`).
+    private func startAtOnce(_ at: CGPoint?, tries: Int) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             guard window != nil, bounds.width > 0 else {
-                if tries > 0 { start(at, tries: tries - 1) }
+                if tries > 0 { startAtOnce(at, tries: tries - 1) }
                 return
             }
             #if DEBUG

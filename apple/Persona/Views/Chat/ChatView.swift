@@ -4150,6 +4150,10 @@ struct ChatView: View {
                         : answers.last
                     menu.anchor = CGPoint(x: 160, y: 30)
                     menu.selected = last?.id
+                    if UserDefaults.standard.bool(forKey: "showSelectText") { // TEMP #5291: Select Text on it, for sampling
+                        try? await Task.sleep(for: .seconds(3))
+                        menu.selectInPlace(at: nil)
+                    }
                 }
             }
             if let what = UserDefaults.standard.string(forKey: "showRewind") { // Rewind on the second-to-last message of yours: bar / ask / run
