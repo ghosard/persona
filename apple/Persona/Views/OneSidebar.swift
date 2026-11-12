@@ -25,16 +25,17 @@ enum OneSidebarMetrics {
     /// a margin; both columns get it, so the fold and the page's top stay on one line.
     static func topMargin(sideBars: Bool) -> CGFloat { sideBars ? Theme.Space.l : 0 }
 
-    /// The column's color behind its rows, header and foot, and over the status bar above it (#4855): on the iPad in the
-    /// glass styles a neutral grey, as ChatGPT's and the iPhone's drawer (`Theme.Shell.drawer`), not the system sidebar's
-    /// grey-blue (`Theme.systemSidebar`, still the Mac's). Nil elsewhere: the column as it was (white on the open Duo, the
-    /// page's color in the other styles).
-    @MainActor static var padColumn: Color? {
-        UIDevice.current.userInterfaceIdiom == .pad && AppStyle.current.usesGlass ? Theme.Shell.drawer : nil
+    /// The column's one color, behind its rows and its header and over the status bar above it (#4855), on the iPad and
+    /// the open Duo in the glass styles: a neutral grey, as ChatGPT's and the iPhone's drawer (`Theme.Shell.drawer`), not
+    /// the system sidebar's grey-blue (`Theme.systemSidebar`, still the Mac's). The Duo's rows kept the system's and its
+    /// header the page's: in dark three bands down the column, black, grey-blue, black (2026-11-12, the owner). Nil in
+    /// the other styles: the column as it was, the page's color.
+    @MainActor static var columnColor: Color? {
+        AppStyle.current.usesGlass ? Theme.Shell.drawer : nil
     }
 
-    /// The header's and the foot's background: the column's.
-    @MainActor static var chromeBackground: Color { padColumn ?? Theme.pageBackground }
+    /// The header's background: the column's, so the rows scroll under it unseen and it reads as part of the column.
+    @MainActor static var chromeBackground: Color { columnColor ?? Theme.pageBackground }
 }
 
 extension EnvironmentValues {
@@ -99,10 +100,10 @@ struct OneSidebarChrome: ViewModifier {
     }
 }
 
-/// The column's own color where it has one (`OneSidebarMetrics.padColumn`), in place of the system sidebar's.
+/// The column's own color where it has one (`OneSidebarMetrics.columnColor`), in place of the system sidebar's.
 private struct OneSidebarColumnColor: ViewModifier {
     func body(content: Content) -> some View {
-        if let color = OneSidebarMetrics.padColumn {
+        if let color = OneSidebarMetrics.columnColor {
             content.scrollContentBackground(.hidden).background(color)
         } else {
             content
@@ -424,7 +425,7 @@ struct OneSidebarFoot: View {
         }
         .padding(.horizontal, Theme.Space.l)
         .padding(.vertical, Theme.Space.m)
-        .background(OneSidebarMetrics.chromeBackground) // the list scrolls under it
+        // No band of its own, as ChatGPT's foot: the buttons float on the column, the rows scroll on behind them.
         .fullScreenCover(isPresented: $fullSearch) {
             AssistantFullSearch { key in
                 fullSearch = false

@@ -167,10 +167,10 @@ struct SplitNavigation<Sidebar: View, Empty: View, Destinations: ViewModifier>: 
         }
     }
 
-    /// The one sidebar's column has a color of its own on the iPad (#4855): the strip over it matches; nil, the system's.
+    /// The one sidebar's column has a color of its own (#4855): the strip over it matches; nil, the system's.
     private var topFillColor: Color? {
         #if os(iOS)
-        home == nil ? nil : OneSidebarMetrics.padColumn
+        home == nil ? nil : OneSidebarMetrics.columnColor
         #else
         nil
         #endif

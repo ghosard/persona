@@ -725,8 +725,10 @@ sidebar. Code in `Persona/Views/OneSidebar.swift`; the column is the Agents list
   sidebar button nor its New Chat there, and the face stays centered with nothing on either side. One button for the column at the top corner at a time
   (two stacked Show Sidebar buttons were reported on 2026-11-12; `OneSidebarTests.testOneButtonForTheColumnAtATime`). Upright and on the iPad New Chat
   stays in the page's top bar.
-- **The iPad column's color** (#4855, iPad and glass only): the column, its header and foot and the status-bar strip above it are `Theme.Shell.drawer`, a
-  neutral near-white / near-black (`OneSidebarMetrics.padColumn`), not the blue-grey `Theme.systemSidebar`, which stays as it was for the Mac and the open Duo.
+- **The column's color** (#4855, the iPad and the open Duo, glass styles): one color down the whole column, its rows, its header and the status-bar strip
+  above it: `Theme.Shell.drawer`, a neutral near-white / near-black (`OneSidebarMetrics.columnColor`), not the blue-grey `Theme.systemSidebar`, which stays
+  the Mac's. The Duo had kept the system's behind its rows and the page's behind its header and foot: in dark three bands, black, grey-blue, black (fixed
+  2026-11-12). The foot has no band of its own, as ChatGPT's: New Chat and the Search · Settings capsule float on the column and the rows scroll on behind them.
 - **Selection**: one row at a time looks chosen: the main row, a place or a Pinned row while Persona's page is shown, Messages while it is, the open agent's
   row while an agent is (`Theme.Tree.selected` on cards, `RepoTreeSelected` on tree rows; `.isSelected` for VoiceOver), in every grouping.
 - **Rows open through the path**: in the column an agent row is a button that sets the Agents page's bound path (`AgentsList.openLink`), not a
