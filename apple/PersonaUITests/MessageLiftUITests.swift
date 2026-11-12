@@ -687,7 +687,7 @@ final class MessageLiftUITests: XCTestCase {
                 XCTAssertTrue(app.textViews["lift-text"].waitForNonExistence(timeout: 3), "拷贝 put the answer back")
 
                 liftTheLongAnswerAtItsEnd()
-                scrollToTheTop()
+                scrollToTheTop(tries: big ? 30 : 8) // the largest text makes the answer several times as tall
                 XCTAssertTrue(shows(firstLine), "the lifted answer scrolls to its first line")
                 pressInLift(CGPoint(x: firstLine.frame.minX + 12, y: firstLine.frame.minY + 12))
                 checkTheMenuIsClear("top" + tag)
