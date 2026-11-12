@@ -19,14 +19,6 @@ final class MessageMenu {
     /// The lifted message's words selected where they are (#603, `LiftSelection.swift`): a second long press on it, or
     /// Select Text. nil: lifted with its bar.
     var inPlace: InPlaceSelect?
-    /// The lifted copy of a message drawn in parts lays out all of its parts (#5221): asked for when its words are to
-    /// be selected (the text view over them follows every line). Until then it lays out only the parts near the screen.
-    var liftWhole = false
-    /// Selecting asked for while that copy lays out all of its parts: `LiftedMessage` starts it once they are there,
-    /// with what showed kept where it was. Meanwhile Select Text spins on the bar.
-    var pendingSelect: InPlaceSelect?
-    /// Lays out all of the parts a frame after Select Text spins (#5291).
-    @ObservationIgnored private let frames = LiftFrames()
     /// The message being shared as a card.
     var sharing: ShareMessage?
     /// Forward (#3807): the chat makes the pressed message a forward and opens its picker (`forwarding`). nil: the bar
@@ -99,35 +91,24 @@ final class MessageMenu {
     }
 
     func close() {
-        frames.stop()
-        if pendingSelect != nil { pendingSelect = nil }
-        if selected != nil || lift != nil || inPlace != nil || liftWhole {
+        if selected != nil || lift != nil || inPlace != nil {
             withAnimation(Theme.Motion.conceal) {
                 selected = nil
                 lift = nil
                 inPlace = nil
-                liftWhole = false
             }
         }
     }
 
     /// Selects the lifted message's words where they are: the word at `point` (in the window), or all of them. A
-    /// message drawn in parts first lays out all of them (`liftWhole`); the selecting starts once they are there.
+    /// message drawn in parts stays as it is, its parts near the screen laid out (#5291): the text view over them holds
+    /// all of its words.
     func selectInPlace(at point: CGPoint?) {
-        guard let lift else { return }
+        guard lift != nil else { return }
         #if DEBUG
-        LiftTrace.start("select part=\(lift.part.map(String.init) ?? "-") whole=\(liftWhole)")
+        LiftTrace.start("select part=\(lift?.part.map(String.init) ?? "-")")
         #endif
         Haptics.tap()
-        if lift.part != nil, !liftWhole {
-            pendingSelect = InPlaceSelect(at: point)
-            // Select Text spins first; then the parts are laid out, one a frame (`AnswerPartsLift`).
-            frames.run { [weak self] in
-                if let self, pendingSelect != nil, self.lift != nil { liftWhole = true }
-                return false
-            }
-            return
-        }
         withAnimation(Theme.Motion.state) { inPlace = InPlaceSelect(at: point) }
     }
 
@@ -558,8 +539,7 @@ struct MessageActionBar: View {
                 menu.selecting = SelectableText(text: text, plain: isUser, msg: id, quotable: !pending)
             }
             #else
-            // A long answer lays itself out first (#5291): it spins meanwhile.
-            action(String(localized: "Select Text [Message Menu 4d8efc]"), Theme.Icon.select, closes: false, busy: menu.pendingSelect != nil) {
+            action(String(localized: "Select Text [Message Menu 4d8efc]"), Theme.Icon.select, closes: false) {
                 menu.selectInPlace(at: nil)
             }
             #endif
@@ -596,25 +576,21 @@ struct MessageActionBar: View {
         .shadow(color: .black.opacity(0.25), radius: 10, y: 4)
     }
 
-    /// tint: the danger color for Delete; nil, the primary ink. busy: a spinner in its symbol's place.
-    private func action(_ title: String, _ symbol: String, closes: Bool = true, tint: Color? = nil, busy: Bool = false,
+    /// tint: the danger color for Delete; nil, the primary ink.
+    private func action(_ title: String, _ symbol: String, closes: Bool = true, tint: Color? = nil,
                         perform: @escaping () -> Void) -> some View {
         Button {
             perform()
             if closes { menu.close() }
-        } label: { label(title, symbol, tint: tint, busy: busy) }
+        } label: { label(title, symbol, tint: tint) }
         .buttonStyle(.plain)
         .accessibilityLabel(title) // its word only, not the symbol's own name too
     }
 
-    private func label(_ title: String, _ symbol: String, tint: Color?, busy: Bool) -> some View {
+    private func label(_ title: String, _ symbol: String, tint: Color?) -> some View {
         VStack(spacing: Theme.Space.xs) {
             // Symbols differ in height: a fixed box keeps every label on one line.
-            if busy {
-                ProgressView().controlSize(.small).scaledFrame(height: Theme.Size.iconS)
-            } else {
-                ThemedIcon(symbol).font(Theme.Font.heading).dynamicTypeSize(...DynamicTypeSize.xxLarge).scaledFrame(height: Theme.Size.iconS)
-            }
+            ThemedIcon(symbol).font(Theme.Font.heading).dynamicTypeSize(...DynamicTypeSize.xxLarge).scaledFrame(height: Theme.Size.iconS)
             Text(title).font(Theme.Font.label).lineLimit(1).minimumScaleFactor(0.8) // Select Text on a narrow bar
         }
         .foregroundStyle(tint.map { AnyShapeStyle($0) } ?? AnyShapeStyle(HierarchicalShapeStyle.primary))

@@ -144,98 +144,67 @@ private struct LiftTracePart: ViewModifier {
 
 /// The lifted copy of a long answer drawn in parts (#5221): all of its parts again, each `Part.gap` under the one
 /// before, as the chat stacks them (so it looks as the answer did whole, `AnswerPartsLookTests`), the pressed part
-/// marked for the lift to put it where it was (`MessageLift.part`). Lifted, it is a lazy stack: only the parts near the
-/// screen are laid out, the others as the copy scrolls to them (laying out all of a long report at once is the cost
-/// #4970 took out of the chat). Its first frame lays out the pressed part and what shows under it, as lifting one part
-/// did (#5291): the parts above it hold their place until the frame after, since a lazy stack opened at a part lays out
-/// its first parts and walks through those above it to reach it. To select its words it lays out all of them
-/// (`MessageMenu.liftWhole`), one a frame, what shows first (`LiftFrames`): the text view over them, laid out from
-/// the whole answer's text, follows every line.
+/// marked for the lift to put it where it was (`MessageLift.part`). It is a lazy stack: only the parts near the screen
+/// are laid out, the others as the copy scrolls to them (laying out all of a long report at once is the cost #4970 took
+/// out of the chat). Its first frame lays out the pressed part and what shows under it, as lifting one part did
+/// (#5291): the parts above it hold their place until the frame after, since a lazy stack opened at a part lays out its
+/// first parts and walks through those above it to reach it. Selected, it stays lazy: the text view over it holds all
+/// of the words, its lines on the chat's in each part laid out (`ShownWords.segments`).
 struct AnswerPartsLift: View {
     var item: Item
     /// The answer's row memo key (`RowMemo.key`).
     var message: String
     var pressed: Int
-    @Environment(\.liftWhole) private var whole
     @Environment(\.liftPartRoom) private var room
     /// The first frame is drawn: the parts above the pressed one are themselves.
     @State private var grown = false
-    /// Selecting: how many parts are themselves past the first ones (`LiftParts.first`).
-    @State private var admitted = 0
-    @State private var laid = LiftParts()
     @State private var frames = LiftFrames()
 
     var body: some View {
         let parts = AnswerPartMemo.parts(item.text ?? "")
         #if DEBUG
-        let _ = LiftTrace.note("parts body pressed=\(pressed)/\(parts.count) whole=\(whole) grown=\(grown) admitted=\(admitted)")
+        let _ = LiftTrace.note("parts body pressed=\(pressed)/\(parts.count) grown=\(grown)")
         #endif
         if parts.isEmpty { // not in parts after all: the answer as one
             AnswerPartWords(text: RowMemo.assistant(message) { _ in AssistantRowText(item.text ?? "") }, key: message, message: message)
-                .liftPressedPart(true, whole: true)
+                .liftPressedPart(true)
                 .markdownSoftBreakMode(.lineBreak)
                 .selectableInLift(item.text ?? "", as: .reply(quiet: false))
-        } else if whole {
-            let rank = laid.ranks(parts.count, pressed: pressed)
-            let shown = laid.first + admitted
-            VStack(alignment: .leading, spacing: 0) {
-                ForEach(parts.indices, id: \.self) { n in
-                    if rank[n] < shown { words(parts, n, whole: shown >= parts.count) } else { held(parts, n) }
-                }
-            }
-            .markdownSoftBreakMode(.lineBreak)
-            .selectableInLift(item.text ?? "", as: .reply(quiet: false))
-            .onAppear {
-                guard laid.first < parts.count else { return }
-                frames.run {
-                    admitted += 1
-                    #if DEBUG
-                    LiftTrace.note("admit \(laid.first + admitted)/\(parts.count)")
-                    #endif
-                    return laid.first + admitted < parts.count
-                }
-            }
         } else {
             let waits = !grown && pressed > 0 && tallerThanTheScreen(parts)
             LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(parts.indices, id: \.self) { n in
-                    if waits && n < pressed {
-                        held(parts, n)
-                    } else {
-                        words(parts, n, whole: false)
-                            .onAppear { laid.near.insert(n) }
-                            .onDisappear { laid.near.remove(n) }
-                    }
+                    if waits && n < pressed { held(parts, n) } else { words(parts, n) }
                 }
             }
             .scrollTargetLayout()
             .markdownSoftBreakMode(.lineBreak)
+            .selectableInLift(item.text ?? "", as: .reply(quiet: false), parts: parts.map(\.line))
             .onAppear {
                 if waits { frames.run { grown = true; return false } }
             }
         }
     }
 
-    @ViewBuilder private func words(_ parts: [AnswerParts.Part], _ n: Int, whole: Bool) -> some View {
+    @ViewBuilder private func words(_ parts: [AnswerParts.Part], _ n: Int) -> some View {
         let key = AnswerPartMemo.key(message, n)
         let text = RowMemo.assistant(key) { _ in AssistantRowText(parts[n].text) }
         #if DEBUG
-        let _ = LiftTrace.note("part \(n) built whole=\(whole) chars=\(parts[n].text.count)")
+        let _ = LiftTrace.note("part \(n) built chars=\(parts[n].text.count)")
         #endif
         AnswerPartWords(text: text, key: key, message: message)
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { laid.heights[n] = $0 }
-            .liftPressedPart(n == pressed, whole: whole)
+            .liftPressedPart(n == pressed)
+            .liftPartBox(n)
             .padding(.top, n == 0 ? 0 : parts[n].gap)
             #if DEBUG
             .modifier(LiftTracePart(n: n))
             #endif
     }
 
-    /// A part not laid out yet, holding its place: as tall as it was when it last was, else as tall as the pressed part
-    /// was in the chat for its length.
+    /// A part not laid out yet, holding its place: as tall as the pressed part was in the chat for its length.
     private func held(_ parts: [AnswerParts.Part], _ n: Int) -> some View {
         Color.clear
-            .frame(height: laid.heights[n] ?? CGFloat(parts[n].text.utf8.count) * height(perByteOf: parts))
+            .frame(height: CGFloat(parts[n].text.utf8.count) * height(perByteOf: parts))
             .padding(.top, n == 0 ? 0 : parts[n].gap)
     }
 
@@ -249,31 +218,5 @@ struct AnswerPartsLift: View {
     private func tallerThanTheScreen(_ parts: [AnswerParts.Part]) -> Bool {
         guard let room else { return false }
         return CGFloat(parts.reduce(0) { $0 + $1.text.utf8.count }) * height(perByteOf: parts) > room.screen * 2
-    }
-}
-
-/// What of a lifted copy's parts is laid out (not observed: nothing is drawn again for it): each one's height once it
-/// was, and those its lazy stack has on hand now; to select its words, the order its parts are laid out in.
-final class LiftParts {
-    var heights: [Int: CGFloat] = [:]
-    var near: Set<Int> = []
-    /// Each part's place in that order, and how many come in its first frame.
-    private(set) var rank: [Int] = []
-    private(set) var first = 0
-
-    /// What the lazy stack has on hand and the pressed part first (they show), then the others, nearest to the pressed
-    /// one first, those under it before those above (which move it, `LiftedMessage.measured`).
-    func ranks(_ count: Int, pressed: Int) -> [Int] {
-        if rank.count == count { return rank }
-        let start = near.union([pressed]).filter { $0 < count }.sorted()
-        let rest = (0..<count).filter { !start.contains($0) }.sorted {
-            let a = abs($0 - pressed), b = abs($1 - pressed)
-            return a != b ? a < b : $0 > $1
-        }
-        var out = [Int](repeating: 0, count: count)
-        for (i, n) in (start + rest).enumerated() { out[n] = i }
-        rank = out
-        first = start.count
-        return out
     }
 }

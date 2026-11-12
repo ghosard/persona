@@ -157,23 +157,60 @@ struct ReplyTextTests {
         #expect(try ink(attached) > 200)
     }
 
-    /// Given the sizes the lifted copy draws its tables at, a table is not drawn again: it takes that much room
-    /// (#5291), no wider than the words. Not as many sizes as tables: each is drawn after all.
+    /// Given the sizes the lifted copy draws its tables at (by part), a table is not drawn again: it takes that much
+    /// room (#5291), no wider than the words (a wider one scrolls sideways there, as tall as it is). One whose part is
+    /// not laid out takes about the room of its rows, not drawn either.
     @Test func aTableTakesTheRoomTheCopyDrawsItIn() throws {
         let md = "看表：\n\n| 页面 | 风险 |\n| --- | --- |\n| 首页 | 低 |\n\n完"
-        func attachment(_ tables: [CGSize]) throws -> NSTextAttachment {
+        func attachment(_ tables: [Int: [CGSize]]) throws -> NSTextAttachment {
             let s = ReplyText.attributed(md, look: look, width: 360, tables: tables)
             #expect(ReplyText.copyText(s) == md)
             let at = (s.string as NSString).range(of: "\u{FFFC}").location
             return try #require(s.attribute(.attachment, at: at, effectiveRange: nil) as? NSTextAttachment)
         }
-        let room = try attachment([CGSize(width: 150, height: 90)])
+        let room = try attachment([0: [CGSize(width: 150, height: 90)]])
         #expect(room.bounds.size == CGSize(width: 150, height: 90))
         #expect(room.image === ReplyText.blank)
-        #expect(try attachment([CGSize(width: 720, height: 90)]).bounds.size == CGSize(width: 360, height: 45))
-        let drawn = try attachment([CGSize(width: 150, height: 90), CGSize(width: 150, height: 90)])
-        #expect(drawn.image !== ReplyText.blank)
-        #expect(try ink(try #require(drawn.image)) > 200)
+        #expect(try attachment([0: [CGSize(width: 720, height: 90)]]).bounds.size == CGSize(width: 360, height: 90))
+        let guessed = try attachment([:])
+        #expect(guessed.image === ReplyText.blank)
+        #expect(guessed.bounds.size == ReplyText.tableRoom(rows: 2, look: look, width: 360))
+    }
+
+    /// An answer drawn in parts (#5291): each line of its words says its part, found by the lines the parts start on,
+    /// and its tables' sizes are found by part.
+    @Test func eachLineOfAnAnswerInPartsSaysItsPart() throws {
+        // Lines: 0 第一段, 2-4 a table, 6 第二段, 8 the heading, 10 第三段; the parts start on 0, 6 and 8.
+        let md = "第一段。\n\n| 页面 | 风险 |\n| --- | --- |\n| 首页 | 低 |\n\n第二段。\n\n## 标题\n\n第三段。"
+        let s = ReplyText.attributed(md, look: look, width: 360, tables: [0: [CGSize(width: 200, height: 70)]], parts: [0, 6, 8])
+        func part(of words: String) -> Int? {
+            s.attribute(.replyPart, at: (s.string as NSString).range(of: words).location, effectiveRange: nil) as? Int
+        }
+        #expect(part(of: "第一段") == 0)
+        #expect(part(of: "\u{FFFC}") == 0)
+        #expect(part(of: "第二段") == 1)
+        #expect(part(of: "标题") == 2 && part(of: "第三段") == 2)
+        let at = (s.string as NSString).range(of: "\u{FFFC}").location
+        #expect((s.attribute(.attachment, at: at, effectiveRange: nil) as? NSTextAttachment)?.bounds.size == CGSize(width: 200, height: 70))
+        var untagged = 0
+        s.enumerateAttribute(.replyPart, in: NSRange(location: 0, length: s.length)) { value, range, _ in
+            if value == nil { untagged += range.length }
+        }
+        #expect(untagged == 0, "every character says its part")
+    }
+
+    /// However short its frame, the text view lays out all of its words: one that does not scroll fits its container to
+    /// its own height as its frame is set, and the words' last line (the line spacing under it past their frame) went.
+    @Test func theTextViewLaysOutAllOfItsWordsInAShortFrame() {
+        let v = LiftUITextView()
+        let place = LiftPlace()
+        place.offer = ProposedViewSize(width: 320, height: nil)
+        v.place = place
+        v.show("第一段。\n\n第二段。\n\n最后一段。", .reply(quiet: false))
+        v.frame = CGRect(x: 0, y: 0, width: 320, height: 30)
+        v.layoutIfNeeded()
+        let laid = v.layoutManager.glyphRange(for: v.textContainer)
+        #expect(laid.length > 0 && NSMaxRange(laid) == v.layoutManager.numberOfGlyphs)
     }
 
     /// Selected to their ends, lines are highlighted across the whole width, a table's and the last line's too (the

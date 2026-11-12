@@ -57,19 +57,17 @@ struct MessageLift {
     var environment: EnvironmentValues? = nil
     /// One part of a message drawn in parts (a long answer, #4970) was pressed, this one (its scroll target id in the
     /// copy): `frame` and `press` are that part's, `preview` draws the whole message with that part marked
-    /// (`liftPressedPart`), and the lift puts it where that part is. The copy lays out only the parts near the screen
-    /// until its words are selected (`MessageMenu.liftWhole`, `AnswerPartsLift`).
+    /// (`liftPressedPart`), and the lift puts it where that part is. The copy lays out only the parts near the screen,
+    /// its words selected too (`AnswerPartsLift`).
     var part: Int? = nil
 }
 
 /// Where the pressed part starts in the lifted copy of a message drawn in parts (`MessageLift.part`): in the copy
-/// (`top`) and in the card's scroll view as it shows (`window`, which changes as it scrolls), and whether the copy
-/// has all of its parts laid out (`MessageMenu.liftWhole`) or only those near the screen.
+/// (`top`) and in the card's scroll view as it shows (`window`, which changes as it scrolls).
 struct LiftPressedPart: PreferenceKey {
     struct Mark: Equatable {
         var top: CGFloat
         var window: CGFloat
-        var whole: Bool
     }
 
     static let space = "lift-copy"
@@ -80,23 +78,23 @@ struct LiftPressedPart: PreferenceKey {
 
 extension View {
     /// The part of a message drawn in parts that was pressed, in its lifted copy (`MessageLift.part`).
-    func liftPressedPart(_ on: Bool, whole: Bool) -> some View {
+    func liftPressedPart(_ on: Bool) -> some View {
         background {
             if on {
                 GeometryReader { g in
                     Color.clear.preference(key: LiftPressedPart.self,
                                            value: LiftPressedPart.Mark(top: g.frame(in: .named(LiftPressedPart.space)).minY,
-                                                                       window: g.frame(in: .named(LiftPressedPart.window)).minY,
-                                                                       whole: whole))
+                                                                       window: g.frame(in: .named(LiftPressedPart.window)).minY))
                 }
             }
         }
     }
+
+    /// A part of a lifted answer drawn in parts, laid out: where it is (`LiftPartBoxes`).
+    func liftPartBox(_ n: Int) -> some View { anchorPreference(key: LiftPartBoxes.self, value: .bounds) { [n: $0] } }
 }
 
 extension EnvironmentValues {
-    /// The lifted copy of a message drawn in parts lays out all of its parts (`MessageMenu.liftWhole`).
-    @Entry var liftWhole = false
     /// The lifted copy of a message drawn in parts: how tall its pressed part was in the chat, and the screen
     /// (`AnswerPartsLift`, its parts not laid out yet).
     @Entry var liftPartRoom: LiftPartRoom? = nil
@@ -237,15 +235,24 @@ extension View {
     func oneBlockInLift() -> some View { modifier(OneBlockInLift()) }
 }
 
-/// The sizes of a lifted copy's tables as it draws them, in order (`ShownWords.tables`): the text view over its words
-/// leaves each that much room, without drawing the table again for it (#5291).
+/// A lifted copy's tables as it draws them, in order (`ShownWords.tables`): the text view over its words leaves each
+/// that much room, without drawing the table again for it (#5291).
 struct LiftTables: PreferenceKey {
-    static var defaultValue: [CGSize] { [] }
-    static func reduce(value: inout [CGSize], nextValue: () -> [CGSize]) { value += nextValue() }
+    static var defaultValue: [Anchor<CGRect>] { [] }
+    static func reduce(value: inout [Anchor<CGRect>], nextValue: () -> [Anchor<CGRect>]) { value += nextValue() }
+}
+
+/// The parts of a lifted answer drawn in parts that are laid out, by number (`AnswerPartsLift`): the text view over
+/// its words puts each part's lines on the chat's lines in that part (`ShownWords.segments`).
+struct LiftPartBoxes: PreferenceKey {
+    static var defaultValue: [Int: Anchor<CGRect>] { [:] }
+    static func reduce(value: inout [Int: Anchor<CGRect>], nextValue: () -> [Int: Anchor<CGRect>]) {
+        value.merge(nextValue()) { a, _ in a }
+    }
 }
 
 extension View {
-    /// A table, as large as it is drawn (its columns, not the width it scrolls in): in a lifted copy, its size
+    /// A table, as large as it is drawn (its columns, not the width it scrolls in): in a lifted copy, where it is
     /// (`LiftTables`).
     func liftTableSize() -> some View { modifier(LiftTableSize()) }
 }
@@ -254,10 +261,10 @@ private struct LiftTableSize: ViewModifier {
     @Environment(\.liftCopy) private var lifted
 
     func body(content: Content) -> some View {
-        content.background {
-            if lifted {
-                GeometryReader { g in Color.clear.preference(key: LiftTables.self, value: [g.size]) }
-            }
+        if lifted {
+            content.anchorPreference(key: LiftTables.self, value: .bounds) { [$0] }
+        } else {
+            content
         }
     }
 }
@@ -363,9 +370,11 @@ nonisolated enum LiftLayout {
     /// takes the next row.
     /// A quote whose first line lands in a folded card shows as many lines as the card has rows: the rest are hidden
     /// (at the card's bottom), and the line after them takes the next row, as after a picture. The rest of the text
-    /// view's lines (and all of them, with no rows) stay as they are, moved as much as the line before.
-    static func snap(_ lines: [SnapLine], to rows: [CGFloat], folds: [ClosedRange<CGFloat>] = [], reach: CGFloat) -> [Snapped] {
-        var out: [Snapped] = [], next = 0, moved: CGFloat = 0, afterBlock = false
+    /// view's lines (and all of them, with no rows) stay as they are, moved as much as the line before. moved: how far
+    /// the first line is from its place (a part's words after parts not laid out, `LiftUITextView.resnap`).
+    static func snap(_ lines: [SnapLine], to rows: [CGFloat], folds: [ClosedRange<CGFloat>] = [], reach: CGFloat,
+                     moved start: CGFloat = 0) -> [Snapped] {
+        var out: [Snapped] = [], next = 0, moved = start, afterBlock = false
         // The folded quote being passed: which, its card, and how many of its rows are left.
         var folding: (quote: Int, card: ClosedRange<CGFloat>, left: Int)?
         var started: Set<Int> = []
@@ -442,10 +451,25 @@ nonisolated enum LiftLayout {
 }
 
 /// A text's words as the chat laid them out (`Text.Layout`): how long they are and where each line after the first
-/// starts, in UTF-16 units (an `NSString`'s) from their start.
+/// starts, in UTF-16 units (an `NSString`'s) from their start; where the text starts (`ShownWords`' coordinates).
 struct WordBreaks: Equatable {
     var length: Int
     var at: [Int] = []
+    var top: CGFloat = 0
+}
+
+/// The chat's lines in a lifted message's words, or in a part of them that is laid out (`ShownWords.segments`), for the
+/// text view over them to put its lines in that part on (`LiftLayout.follow`, `LiftLayout.snap`).
+struct LiftSegment: Equatable {
+    /// The part (`AnswerParts.Part`); nil: all of the words.
+    var part: Int?
+    /// Where the part is (`ShownWords`' coordinates); nil: all of the words.
+    var box: ClosedRange<CGFloat>?
+    var rows: [CGFloat]
+    var folds: [ClosedRange<CGFloat>]
+    var texts: [WordBreaks]
+    /// Its tables' sizes as drawn, in order.
+    var tables: [CGSize]
 }
 
 /// A folded quote's card (`ReplyQuote`): its words are all laid out, the lines past the fold hidden, so those are no
@@ -471,8 +495,10 @@ struct ShownWords: PreferenceKey, Equatable {
     var folds: [CGRect] = []
     /// Where each text's lines break, all of them (a folded quote's too), in order (`LiftLayout.follow`).
     var texts: [WordBreaks] = []
-    /// Its tables' sizes as drawn, in order (`LiftTables`).
-    var tables: [CGSize] = []
+    /// Its tables as drawn, in order (`LiftTables`).
+    var tables: [CGRect] = []
+    /// An answer drawn in parts: the parts laid out, by number (`LiftPartBoxes`). Empty: the words are all laid out.
+    var parts: [Int: CGRect] = [:]
 
     static var defaultValue: ShownWords { ShownWords() }
     static func reduce(value: inout ShownWords, nextValue: () -> ShownWords) {
@@ -481,6 +507,23 @@ struct ShownWords: PreferenceKey, Equatable {
         value.folds += n.folds
         value.texts += n.texts
         value.tables += n.tables
+        value.parts.merge(n.parts) { a, _ in a }
+    }
+
+    /// What the text view over the words puts its lines by (`LiftUITextView.snap`): one segment for all of them, or
+    /// one for each part laid out of an answer drawn in parts (#5291), with what is in that part's box.
+    var segments: [LiftSegment] {
+        guard !parts.isEmpty else {
+            return [LiftSegment(part: nil, box: nil, rows: rows, folds: foldSpans, texts: texts, tables: tables.map(\.size))]
+        }
+        return parts.sorted { $0.key < $1.key }.map { n, box in
+            func inside(_ y: CGFloat) -> Bool { y >= box.minY - 0.5 && y <= box.maxY + 0.5 }
+            var w = ShownWords()
+            w.lines = lines.filter { inside($0.baseline) }
+            w.folds = folds.filter { inside($0.midY) }
+            return LiftSegment(part: n, box: box.minY...box.maxY, rows: w.rows, folds: w.foldSpans,
+                               texts: texts.filter { inside($0.top) }, tables: tables.filter { inside($0.midY) }.map(\.size))
+        }
     }
 
     /// The lines that show: not those of a text in a folded quote past its card's bottom.
@@ -520,7 +563,7 @@ struct ShownWords: PreferenceKey, Equatable {
     }
 
     /// Each text's line breaks, in the order the texts come.
-    static func breaks(_ layouts: Text.LayoutKey.Value) -> [WordBreaks] {
+    static func breaks(_ layouts: Text.LayoutKey.Value, _ geo: GeometryProxy) -> [WordBreaks] {
         layouts.compactMap { a in
             var first: Text.Layout.CharacterIndex?, last: Text.Layout.CharacterIndex?
             var starts: [Text.Layout.CharacterIndex] = []
@@ -531,7 +574,7 @@ struct ShownWords: PreferenceKey, Equatable {
                 last = max(last ?? hi, hi)
             }
             guard let first, let last else { return nil }
-            return WordBreaks(length: first.distance(to: last) + 1, at: starts.map { first.distance(to: $0) })
+            return WordBreaks(length: first.distance(to: last) + 1, at: starts.map { first.distance(to: $0) }, top: geo[a.origin].y)
         }
     }
 }
@@ -546,11 +589,19 @@ extension View {
         .backgroundPreferenceValue(Text.LayoutKey.self) { layouts in
             GeometryReader { geo in
                 Color.clear.preference(key: ShownWords.self,
-                                       value: ShownWords(lines: ShownWords.measure(layouts, geo), texts: ShownWords.breaks(layouts)))
+                                       value: ShownWords(lines: ShownWords.measure(layouts, geo), texts: ShownWords.breaks(layouts, geo)))
             }
         }
-        .backgroundPreferenceValue(LiftTables.self) { sizes in Color.clear.preference(key: ShownWords.self, value: ShownWords(tables: sizes)) }
+        .backgroundPreferenceValue(LiftTables.self) { tables in
+            GeometryReader { geo in Color.clear.preference(key: ShownWords.self, value: ShownWords(tables: tables.map { geo[$0] })) }
+        }
         .transformPreference(LiftTables.self) { $0 = [] }
+        .backgroundPreferenceValue(LiftPartBoxes.self) { parts in
+            GeometryReader { geo in
+                Color.clear.preference(key: ShownWords.self, value: ShownWords(parts: parts.mapValues { geo[$0] }))
+            }
+        }
+        .transformPreference(LiftPartBoxes.self) { $0 = [:] }
         .overlayPreferenceValue(ShownWords.self) { shown in read(shown) }
         .transformPreference(ShownWords.self) { $0 = ShownWords() }
     }
@@ -589,17 +640,16 @@ extension EnvironmentValues {
 #if DEBUG
 /// #5291 diagnosis, temporary (reverted before the PR): with `-showLiftTrace YES`, where a lift's and Select Text's
 /// main-thread time goes, as `lift-trace` notices (milliseconds since the press or the tap), with every frame gap over
-/// 25 ms. `-showLiftVariant N` picks how the lifted parts come in (`AnswerPartsLift`).
+/// 25 ms.
 enum LiftTrace {
     static let on = UserDefaults.standard.bool(forKey: "showLiftTrace")
-    static let variant = UserDefaults.standard.integer(forKey: "showLiftVariant")
     static var t0 = CACurrentMediaTime()
     private static let log = Logger(subsystem: "persona", category: "lift-trace")
 
     static func start(_ what: String) {
         guard on else { return }
         t0 = CACurrentMediaTime()
-        note("start \(what) variant=\(variant)")
+        note("start \(what)")
         LiftTraceFrames.shared.run()
     }
 
@@ -831,7 +881,6 @@ private struct LiftedMessage: View {
                 if lift.part != nil { lift.preview } else { Offers(offer: lift.offer) { lift.preview } }
             }
                 .environment(\.liftSelect, menu.inPlace)
-                .environment(\.liftWhole, menu.liftWhole)
                 .environment(\.liftPartRoom, lift.part != nil ? LiftPartRoom(part: lift.frame.height, screen: screen) : nil)
                 .environment(\.liftCopy, true)
                 .environment(menu)
@@ -876,14 +925,14 @@ private struct LiftedMessage: View {
 
     /// The pressed part of a message drawn in parts, measured in the copy. Its first measure places the copy
     /// (`placing`). As the card scrolls, where the part shows is kept. When the copy above the pressed part changes
-    /// while nobody scrolls it (the parts above it come in after the first frame, all of them are laid out to select
-    /// the words, MarkdownUI spaces their blocks a pass later), the copy is scrolled for that part to show where it
-    /// did: what showed stays where it was. While it is scrolled, the lazy stack keeps what shows itself. Selecting
-    /// asked for meanwhile starts once all of the parts are laid out.
+    /// while nobody scrolls it and its words are not selected (the parts above it come in after the first frame,
+    /// MarkdownUI spaces their blocks a pass later), the copy is scrolled for that part to show where it did: what
+    /// showed stays where it was. While it is scrolled, or its words are selected (a handle held at its edge scrolls
+    /// it), the lazy stack keeps what shows itself.
     private func measured(_ v: LiftPressedPart.Mark?) {
         guard let v else { return }
         #if DEBUG
-        LiftTrace.note("measured top=\(Int(v.top)) window=\(Int(v.window)) whole=\(v.whole) placing=\(placing) first=\(partTop == nil)")
+        LiftTrace.note("measured top=\(Int(v.top)) window=\(Int(v.window)) placing=\(placing) first=\(partTop == nil)")
         #endif
         defer { partTop = v.top }
         if partTop == nil {
@@ -895,7 +944,7 @@ private struct LiftedMessage: View {
             scrolled.top = v.top
             return
         }
-        if v.whole || scrolled.idle, abs(v.top - scrolled.top) > 0.25, let shown = scrolled.window {
+        if scrolled.idle, !selecting, abs(v.top - scrolled.top) > 0.25, let shown = scrolled.window {
             // The content offset that puts the part `shown` below the card's top: its place in the content (inside
             // the copy's padding) less that.
             scroll.scrollTo(y: pad.top + v.top - shown)
@@ -903,13 +952,6 @@ private struct LiftedMessage: View {
             scrolled.window = v.window
         }
         scrolled.top = v.top
-        if v.whole, let pending = menu.pendingSelect {
-            menu.pendingSelect = nil
-            #if DEBUG
-            LiftTrace.note("select begins (all parts measured)")
-            #endif
-            withAnimation(Theme.Motion.state) { menu.inPlace = pending }
-        }
     }
 
     /// Moved where `LiftLayout.place` puts the copy, once.

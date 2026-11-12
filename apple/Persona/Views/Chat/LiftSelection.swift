@@ -74,9 +74,11 @@ enum LiftWords: Equatable {
 
 extension View {
     /// Words a long press lifts (#603): in the lifted copy, while they are selected, a text view laid out like them in
-    /// which any part can be selected and copied. Everywhere else they are drawn as they are.
-    func selectableInLift(_ text: String, as words: LiftWords) -> some View {
-        modifier(SelectableInLift(text: text, words: words))
+    /// which any part can be selected and copied. Everywhere else they are drawn as they are. parts: an answer drawn in
+    /// parts (a lazy stack of them), the lines its parts start on (`AnswerParts.Part.line`): the text view holds all
+    /// of its words, its lines on the chat's in each part laid out (`ShownWords.segments`).
+    func selectableInLift(_ text: String, as words: LiftWords, parts: [Int]? = nil) -> some View {
+        modifier(SelectableInLift(text: text, words: words, parts: parts))
     }
 }
 
@@ -88,21 +90,20 @@ private struct SelectableInLift: ViewModifier {
     @Environment(\.fileScope) private var scope
     var text: String
     var words: LiftWords
+    var parts: [Int]?
     /// The width the words were offered, which they wrap at (they may take less): the text view wraps there too.
     @State private var place = LiftPlace()
 
     func body(content: Content) -> some View {
         #if os(iOS) || os(visionOS)
         if lifted {
-            RecordsOffer(place: place) {
-                content.accessibilityHidden(select != nil) // the text view's words, while it is over them
-            }
+            offered(content.accessibilityHidden(select != nil)) // the text view's words, while it is over them
             // The text view over them, its lines on theirs (`LiftLayout.snap`), a folded quote's hidden ones aside.
             .readingShownWords { shown in
                 if let select, let menu {
                     GeometryReader { geo in
-                        LiftTextView(text: source, words: words, select: select, menu: menu, place: place,
-                                     rows: shown.rows, folds: shown.foldSpans, texts: shown.texts, tables: shown.tables)
+                        LiftTextView(text: source, words: words, parts: parts ?? [], select: select, menu: menu, place: place,
+                                     segments: shown.segments)
                             .frame(width: geo.size.width, height: geo.size.height)
                     }
                 }
@@ -113,6 +114,12 @@ private struct SelectableInLift: ViewModifier {
         #else
         content
         #endif
+    }
+
+    /// What the words are offered (`place`). Parts in a lazy stack, as wide as the copy: nothing between the stack and
+    /// the scroll view's own layout, which lays out only what is near the screen.
+    @ViewBuilder private func offered(_ words: some View) -> some View {
+        if parts == nil { RecordsOffer(place: place) { words } } else { words }
     }
 
     /// The words as the chat draws them: a reply's paths that are there, written as code, are linked as words in the
@@ -199,29 +206,26 @@ private final class FingerFollower: UIGestureRecognizer {
 private struct LiftTextView: UIViewRepresentable {
     var text: String
     var words: LiftWords
+    /// The lines an answer's parts start on; empty: drawn whole.
+    var parts: [Int]
     var select: InPlaceSelect
     var menu: MessageMenu
     var place: LiftPlace
-    /// The chat's lines (`ShownWords.rows`).
-    var rows: [CGFloat]
-    /// Its folded quotes' cards (`ShownWords.foldSpans`).
-    var folds: [ClosedRange<CGFloat>]
-    /// Where the chat's lines break (`ShownWords.texts`).
-    var texts: [WordBreaks]
-    /// Its tables' sizes as drawn (`ShownWords.tables`).
-    var tables: [CGSize]
+    /// The chat's lines, its folded quotes, its line breaks and its tables: in all of the words, or in each part laid
+    /// out (`ShownWords.segments`).
+    var segments: [LiftSegment]
 
     func makeUIView(context: Context) -> LiftUITextView { LiftUITextView() }
 
     func updateUIView(_ v: LiftUITextView, context: Context) {
         let menu = menu
         #if DEBUG
-        LiftTrace.note("text view update rows=\(rows.count)")
+        LiftTrace.note("text view update parts=\(segments.compactMap(\.part)) rows=\(segments.reduce(0) { $0 + $1.rows.count })")
         #endif
         v.place = place
         v.show(text, words, design: UIFontDescriptor.SystemDesign(StyleSpec.current.fontDesign), // the app's, as RootView sets it
-               tables: tables)
-        v.snap(to: rows, folds: folds, texts: texts)
+               parts: parts)
+        v.snap(to: segments)
         if let bar = menu.lift?.bar,
            let quote = menu.selectionQuote(of: SelectableText(text: bar.text, plain: bar.isUser, msg: bar.id, quotable: !bar.pending)) {
             v.quote = { picked in
@@ -264,19 +268,20 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
     /// What the words under it were offered (`RecordsOffer`).
     var place: LiftPlace?
     private var design = UIFontDescriptor.SystemDesign.default
-    /// Its lines on the chat's (`LiftLayout.snap`): the chat's baselines, and the delegate that puts each line there.
-    private var rows: [CGFloat] = []
-    /// Its folded quotes' cards: their lines past the fold are hidden (`LiftLayout.snap`).
-    private var folds: [ClosedRange<CGFloat>] = []
-    /// Where the chat's lines break: its own break there too (`LiftLayout.follow`).
-    private var texts: [WordBreaks] = []
+    /// Its lines on the chat's (`LiftLayout.snap`): the chat's baselines, its folded quotes' cards (their lines past the
+    /// fold are hidden) and where its lines break (`LiftLayout.follow`), in all of the words or in each part laid out;
+    /// and the delegate that puts each line there.
+    private var segments: [LiftSegment] = []
     private let snapper = LineSnap()
+    /// An answer drawn in parts: the lines its parts start on, and where each part's words are in the text.
+    private var parts: [Int] = []
+    private var partRanges: [Int: NSRange] = [:]
     /// The menu shown over the words a press picked. The text view's own menu only comes up on its own gestures, and
     /// its interaction is not among `interactions`; this one shows the same items.
     private lazy var menuInteraction = UIEditMenuInteraction(delegate: self)
     private var source: (text: String, words: LiftWords)?
-    /// The tables' sizes as the copy draws them (`LiftTables`).
-    private var tables: [CGSize] = []
+    /// The tables' sizes as the copy draws them, by part (`LiftTables`): kept for a part no longer laid out.
+    private var tables: [Int: [CGSize]] = [:]
     /// The width the words were laid out for (a table's picture and columns depend on it).
     private var laidOut: CGFloat = 0
     /// Its lines are to go on the chat's (`resnap`), once, in its next layout: the words and the chat's lines change
@@ -323,13 +328,11 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
 
     required init?(coder: NSCoder) { fatalError("not from a nib") }
 
-    func show(_ text: String, _ words: LiftWords, design: UIFontDescriptor.SystemDesign = .default, tables: [CGSize] = []) {
-        let sameTables = tables.count == self.tables.count
-            && !zip(tables, self.tables).contains { abs($0.width - $1.width) > 0.5 || abs($0.height - $1.height) > 0.5 }
-        guard source?.text != text || source?.words != words || self.design != design || !sameTables else { return }
+    func show(_ text: String, _ words: LiftWords, design: UIFontDescriptor.SystemDesign = .default, parts: [Int] = []) {
+        guard source?.text != text || source?.words != words || self.design != design || self.parts != parts else { return }
         source = (text, words)
         self.design = design
-        self.tables = tables
+        self.parts = parts
         render(width: laidOut > 0 ? laidOut : wrapWidth)
     }
 
@@ -343,7 +346,7 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
         let words: NSAttributedString = LiftTrace.time("reply-text \(source.text.count) chars w=\(Int(width)) tables=\(tables.count)") {
             switch source.words {
             case .plain: ReplyText.plain(source.text, look: look)
-            case .reply: ReplyText.attributed(source.text, look: look, width: width, tables: tables)
+            case .reply: ReplyText.attributed(source.text, look: look, width: width, tables: tables, parts: parts)
             }
         }
         let cleared = LiftTrace.time("reply-text clear") { ReplyText.clear(words) }
@@ -351,27 +354,66 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
         #else
         let words: NSAttributedString = switch source.words {
         case .plain: ReplyText.plain(source.text, look: look)
-        case .reply: ReplyText.attributed(source.text, look: look, width: width, tables: tables)
+        case .reply: ReplyText.attributed(source.text, look: look, width: width, tables: tables, parts: parts)
         }
         attributedText = ReplyText.clear(words)
         #endif
+        partRanges = [:]
+        if !parts.isEmpty {
+            storage.enumerateAttribute(.replyPart, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+                guard let n = value as? Int else { return }
+                partRanges[n] = partRanges[n].map { NSUnionRange($0, range) } ?? range
+            }
+        }
         snapSoon()
         #if DEBUG
         setNeedsLayout() // `LiftLines`
         #endif
     }
 
-    /// The chat's lines, for this view's to go on, its folded quotes' cards, and where its lines break.
-    func snap(to rows: [CGFloat], folds: [ClosedRange<CGFloat>] = [], texts: [WordBreaks] = []) {
-        let same = rows.count == self.rows.count && !zip(rows, self.rows).contains(where: { abs($0 - $1) > 0.25 })
-            && folds.count == self.folds.count
-            && !zip(folds, self.folds).contains(where: { abs($0.lowerBound - $1.lowerBound) > 0.25 || abs($0.upperBound - $1.upperBound) > 0.25 })
-            && texts == self.texts
-        guard !same else { return }
-        self.rows = rows
-        self.folds = folds
-        self.texts = texts
+    /// The chat's lines, for this view's to go on, its folded quotes' cards, where its lines break and its tables: in
+    /// all of the words, or in each part laid out.
+    func snap(to segments: [LiftSegment]) {
+        guard !Self.same(segments, self.segments) else { return }
+        self.segments = segments
+        var tables = tables
+        for s in segments where !s.tables.isEmpty { tables[s.part ?? 0] = s.tables }
+        if tables != self.tables {
+            self.tables = tables
+            fitTables()
+        }
         snapSoon()
+    }
+
+    /// The same lines, within a quarter of a point.
+    private static func same(_ a: [LiftSegment], _ b: [LiftSegment]) -> Bool {
+        func near(_ x: CGFloat, _ y: CGFloat) -> Bool { abs(x - y) <= 0.25 }
+        func near(_ x: ClosedRange<CGFloat>, _ y: ClosedRange<CGFloat>) -> Bool { near(x.lowerBound, y.lowerBound) && near(x.upperBound, y.upperBound) }
+        return a.count == b.count && zip(a, b).allSatisfy { x, y in
+            x.part == y.part && x.texts == y.texts && x.tables == y.tables
+                && x.rows.count == y.rows.count && zip(x.rows, y.rows).allSatisfy(near)
+                && x.folds.count == y.folds.count && zip(x.folds, y.folds).allSatisfy(near)
+                && (x.box == nil) == (y.box == nil) && (x.box.flatMap { a in y.box.map { near(a, $0) } } ?? true)
+        }
+    }
+
+    /// Its tables as large as the copy draws them (`tables`), in place: a part that comes into view brings its tables'.
+    private func fitTables() {
+        guard storage.length > 0, laidOut > 0 else { return }
+        var seen: [Int: Int] = [:]
+        storage.beginEditing()
+        storage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+            guard let a = value as? NSTextAttachment, storage.attribute(.replySource, at: range.location, effectiveRange: nil) != nil else { return }
+            let part = storage.attribute(.replyPart, at: range.location, effectiveRange: nil) as? Int ?? 0
+            let at = seen[part, default: 0]
+            seen[part] = at + 1
+            guard let sizes = tables[part], at < sizes.count, sizes[at].width > 0, sizes[at].height > 0 else { return }
+            let room = ReplyText.room(scrolled: sizes[at], width: laidOut)
+            guard abs(a.bounds.width - room.width) > 0.5 || abs(a.bounds.height - room.height) > 0.5 else { return }
+            a.bounds = CGRect(origin: .zero, size: room)
+            storage.edited(.editedAttributes, range: range, changeInLength: 0)
+        }
+        storage.endEditing()
     }
 
     /// Its lines go on the chat's in its next layout (`snapPending`).
@@ -381,39 +423,76 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
     }
 
     /// Lays the words out breaking where the chat's do (`LiftLayout.follow`), then again with each line on the chat's
-    /// line for it (`LiftLayout.snap`).
+    /// line for it (`LiftLayout.snap`). An answer drawn in parts, part by part: the lines of each part laid out go on
+    /// the chat's in it, from its first; those of a part not laid out have no lines of the chat's to go on yet, and stay
+    /// out of sight (hidden, between the parts around it) until it is (#5291).
     private func resnap() {
         let all = NSRange(location: 0, length: storage.length)
         snapper.targets = [:]
         snapper.hidden = []
         snapper.shifts = [:]
-        (snapper.held, snapper.breaks) = LiftLayout.follow(texts, paragraphs: wrapping)
+        let split = !parts.isEmpty
+        func range(of s: LiftSegment) -> NSRange? {
+            guard let p = s.part else { return all }
+            return split ? partRanges[p] : nil
+        }
+        let paragraphs = wrapping
+        var held = IndexSet(), breaks = IndexSet()
+        for s in segments {
+            guard let r = range(of: s) else { continue }
+            let mine = paragraphs.filter { $0.location >= r.location && NSMaxRange($0) <= NSMaxRange(r) }
+            let f = LiftLayout.follow(s.texts, paragraphs: mine)
+            held.formUnion(f.held)
+            breaks.formUnion(f.at)
+        }
+        (snapper.held, snapper.breaks) = (held, breaks)
         layout.invalidateLayout(forCharacterRange: all, actualCharacterRange: nil)
-        guard !rows.isEmpty, storage.length > 0 else { return }
+        guard segments.contains(where: { !$0.rows.isEmpty }), storage.length > 0 else { return }
         layout.ensureLayout(for: textContainer)
         let text = storage.string as NSString
-        var starts: [Int] = []
-        var lines: [LiftLayout.SnapLine] = []
+        // Each line with words: its first glyph, its part, and what it is.
+        var found: [(start: Int, part: Int, line: LiftLayout.SnapLine)] = []
         var codes: Set<Int> = []
         var shifts: [Int: CGFloat] = [:]
         layout.enumerateLineFragments(forGlyphRange: layout.glyphRange(for: textContainer)) { rect, _, _, range, _ in
             let chars = self.layout.characterRange(forGlyphRange: range, actualGlyphRange: nil)
             let s = text.substring(with: chars)
             guard s.contains(where: { !$0.isWhitespace }) else { return }
-            starts.append(range.location)
             shifts[range.location] = self.wrappedStart(rect, range, chars.location, text)
             let block = self.storage.attribute(.replyBlock, at: chars.location, effectiveRange: nil) as? ReplyBlock
             let id = block.map { ObjectIdentifier($0).hashValue }
             // A code block's first line, under its title bar: on the chat's next line, wherever the bar put it.
             let fresh = block?.kind == .code && id.map { codes.insert($0).inserted } == true
-            lines.append(LiftLayout.SnapLine(baseline: rect.minY + self.layout.location(forGlyphAt: range.location).y,
-                                             block: s.contains("\u{FFFC}"), quote: block?.kind == .quote ? id : nil, fresh: fresh))
+            let part = split ? self.storage.attribute(.replyPart, at: chars.location, effectiveRange: nil) as? Int ?? 0 : 0
+            found.append((range.location, part, LiftLayout.SnapLine(baseline: rect.minY + self.layout.location(forGlyphAt: range.location).y,
+                                                                    block: s.contains("\u{FFFC}"), quote: block?.kind == .quote ? id : nil,
+                                                                    fresh: fresh)))
         }
         let reach = UIFont.preferredFont(forTextStyle: .body, compatibleWith: traitCollection).pointSize * 0.6
-        let snapped = LiftLayout.snap(lines, to: rows, folds: folds, reach: reach)
-        snapper.targets = Dictionary(zip(starts, snapped.map(\.at)), uniquingKeysWith: { a, _ in a })
+        var targets: [Int: CGFloat] = [:], hidden: Set<Int> = []
+        for s in segments where !s.rows.isEmpty {
+            let mine = split ? found.filter { $0.part == s.part } : found
+            guard !mine.isEmpty else { continue }
+            // A part's words start on its first line, wherever the parts before them ended up.
+            let from = split ? mine.first(where: { !$0.line.block }).map { s.rows[0] - $0.line.baseline } ?? 0 : 0
+            let snapped = LiftLayout.snap(mine.map(\.line), to: s.rows, folds: s.folds, reach: reach, moved: from)
+            for (l, at) in zip(mine, snapped) {
+                targets[l.start] = at.at
+                if at.hidden { hidden.insert(l.start) }
+            }
+        }
+        if split {
+            let boxes = segments.compactMap { s in s.part.flatMap { p in s.box.map { (part: p, box: $0) } } }
+            for l in found where !boxes.contains(where: { $0.part == l.part }) {
+                let before = boxes.last(where: { $0.part < l.part })?.box.upperBound ?? 0
+                let after = boxes.first(where: { $0.part > l.part })?.box.lowerBound ?? max(bounds.height, before)
+                targets[l.start] = (before + after) / 2
+                hidden.insert(l.start)
+            }
+        }
+        snapper.targets = targets
         snapper.shifts = shifts
-        snapper.hidden = Set(zip(starts, snapped).filter { $0.1.hidden }.map(\.0))
+        snapper.hidden = hidden
         layout.invalidateLayout(forCharacterRange: all, actualCharacterRange: nil)
         layout.ensureLayout(for: textContainer)
         setNeedsDisplay()
@@ -459,18 +538,33 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
     override func layoutSubviews() {
         let w = wrapWidth
         if w > 0, abs(w - laidOut) > 0.5, !picked { render(width: w) }
+        if keepsAllLaidOut() { snapPending = true }
         if snapPending {
             snapPending = false
             #if DEBUG
-            LiftTrace.time("resnap rows=\(rows.count)") { resnap() }
+            LiftTrace.time("resnap parts=\(segments.compactMap(\.part)) rows=\(segments.reduce(0) { $0 + $1.rows.count })") { resnap() }
             #else
             resnap()
             #endif
         }
         super.layoutSubviews()
+        if keepsAllLaidOut() { resnap() }
         #if DEBUG
         if LiftLines.on { LiftLines.shared.select = LiftLines.lines(of: self, layout: layout) }
         #endif
+    }
+
+    /// Its words all laid out, however tall: a text view that does not scroll fits its container to its own height as
+    /// its frame is set, and its last line (the line spacing under it past the words' frame) went. true: it had.
+    private func keepsAllLaidOut() -> Bool {
+        guard laidOut > 0, textContainer.size.height < .greatestFiniteMagnitude / 2 || abs(textContainer.size.width - laidOut) > 0.5 else {
+            return false
+        }
+        #if DEBUG
+        LiftTrace.note("text container was \(textContainer.size), bounds \(bounds.size)")
+        #endif
+        textContainer.size = CGSize(width: laidOut, height: .greatestFiniteMagnitude)
+        return true
     }
 
     /// The selection's highlight, the same on every line: a line it covers to its end reaches across the whole width,
@@ -718,6 +812,8 @@ extension NSAttributedString.Key {
     nonisolated static let replyBlock = NSAttributedString.Key("PersonaReplyBlock")
     /// What a picture in the words copies as (a table's Markdown).
     nonisolated static let replySource = NSAttributedString.Key("PersonaReplySource")
+    /// Which part of an answer drawn in parts a line of its words is in (`AnswerParts.Part`), 0 for one drawn whole.
+    nonisolated static let replyPart = NSAttributedString.Key("PersonaReplyPart")
 }
 
 /// Behind a run of lines: a code block's background, a quote's bar, a rule. One object per block, so a block's lines
@@ -911,14 +1007,33 @@ enum ReplyText {
         return NSAttributedString(string: text, attributes: [.font: look.body, .foregroundColor: look.color, .paragraphStyle: style])
     }
 
-    /// A reply laid out for `width` (what a table's picture is drawn at). tables: its tables' sizes as the lifted copy
-    /// draws them (`LiftTables`), each left that much room instead of drawn again; when they are not as many as its
-    /// tables, they are drawn again after all.
-    static func attributed(_ markdown: String, look: Look, width: CGFloat, tables: [CGSize]? = nil) -> NSAttributedString {
-        let b = Builder(look: look, width: width, tables: tables)
+    /// A reply laid out for `width` (what a table's picture is drawn at). parts: the lines its parts start on, for an
+    /// answer drawn in parts (`AnswerParts.Part.line`): each line of the words says its part (`replyPart`).
+    /// tables: its tables' sizes as the lifted copy draws them (`LiftTables`), by part, in order: each is left that much
+    /// room, not drawn again; one whose part is not laid out gets about the room it takes (`tableRoom`). nil: each
+    /// table is drawn as a picture.
+    static func attributed(_ markdown: String, look: Look, width: CGFloat, tables: [Int: [CGSize]]? = nil,
+                           parts: [Int] = []) -> NSAttributedString {
+        let b = Builder(look: look, width: width, tables: tables, parts: parts)
         b.read(markdown)
-        if let tables, b.tableCount != tables.count { return attributed(markdown, look: look, width: width) }
         return b.finish()
+    }
+
+    /// A table's picture's room in the words, drawn that large: no wider than the words, scaled down to them.
+    static func room(_ drawn: CGSize, width: CGFloat) -> CGSize {
+        drawn.width > width && width > 0 ? CGSize(width: width, height: drawn.height * width / drawn.width) : drawn
+    }
+
+    /// A table's room in the words, the copy drawing it that large: one wider than the words scrolls sideways in them,
+    /// as tall as it is.
+    static func room(scrolled drawn: CGSize, width: CGFloat) -> CGSize {
+        CGSize(width: width > 0 ? min(drawn.width, width) : drawn.width, height: drawn.height)
+    }
+
+    /// About the room a table of `rows` lines (its header's too) takes, before it is laid out: the words' width, a
+    /// line and its cell's padding a row.
+    static func tableRoom(rows: Int, look: Look, width: CGFloat) -> CGSize {
+        CGSize(width: width, height: CGFloat(max(rows, 1)) * (look.body.lineHeight + 2 * Theme.Space.sm))
     }
 
     /// A picture's room in the words that are clear (`clear`): drawn as large as the room, it draws nothing.
@@ -952,6 +1067,8 @@ enum ReplyText {
         var item = false
         /// What its line break carries when it has no text of its own (an empty line of code: its font and background).
         var ending: [NSAttributedString.Key: Any]?
+        /// The answer's part it is in (`replyPart`).
+        var part = 0
     }
 
     private enum Open {
@@ -961,10 +1078,14 @@ enum ReplyText {
     private final class Builder {
         let look: Look
         let width: CGFloat
-        /// The tables' sizes as the copy draws them, in order; nil: each drawn again as a picture (`ReplyTable`).
-        let tables: [CGSize]?
-        /// How many tables were read.
-        private(set) var tableCount = 0
+        /// The tables' sizes as the copy draws them, by part, in order; nil: each drawn as a picture (`ReplyTable`).
+        let tables: [Int: [CGSize]]?
+        /// The lines the answer's parts start on; empty: one part.
+        let parts: [Int]
+        /// The part being read, the next one's index, and how many tables each part had so far.
+        private var part = 0
+        private var nextPart = 1
+        private var tablesRead: [Int: Int] = [:]
         var lines: [Line] = []
         var blocks: [Block] = []
         var open: Open?
@@ -972,10 +1093,11 @@ enum ReplyText {
         var levels: [(marker: Int, text: CGFloat)] = []
         var afterBlank = false
 
-        init(look: Look, width: CGFloat, tables: [CGSize]? = nil) {
+        init(look: Look, width: CGFloat, tables: [Int: [CGSize]]? = nil, parts: [Int] = []) {
             self.look = look
             self.width = width
             self.tables = tables
+            self.parts = parts
         }
 
         private var markerWidth: CGFloat { look.size * 1.5 }
@@ -988,6 +1110,10 @@ enum ReplyText {
             let source = CJKEmphasis.apply(markdown).components(separatedBy: "\n")
             var i = 0
             while i < source.count {
+                while nextPart < parts.count, i >= parts[nextPart] {
+                    part = nextPart
+                    nextPart += 1
+                }
                 let raw = source[i]
                 i += 1
                 let trimmed = raw.trimmingCharacters(in: .whitespaces)
@@ -1128,7 +1254,7 @@ enum ReplyText {
                 open = nil
             }
             afterBlank = true
-            lines.append(Line(text: NSMutableAttributedString(string: ""), block: nil))
+            lines.append(Line(text: NSMutableAttributedString(string: ""), block: nil, part: part))
         }
 
         private func code(_ text: String, _ block: ReplyBlock) {
@@ -1180,14 +1306,19 @@ enum ReplyText {
             blocks.append(Block())
             open = nil
             levels = []
-            let at = tableCount
-            tableCount += 1
+            let at = tablesRead[part, default: 0]
+            tablesRead[part] = at + 1
             let a = NSTextAttachment()
-            let drawn: CGSize
-            if let tables, at < tables.count, tables[at].width > 0, tables[at].height > 0 {
-                // Its room only, as large as the copy draws it: the words over it are clear (`ReplyText.clear`).
+            let room: CGSize
+            if let tables {
+                // Its room only, as large as the copy draws it (about, its part not laid out): the words over it are
+                // clear (`ReplyText.clear`).
                 a.image = ReplyText.blank
-                drawn = tables[at]
+                if let sizes = tables[part], at < sizes.count, sizes[at].width > 0, sizes[at].height > 0 {
+                    room = ReplyText.room(scrolled: sizes[at], width: width)
+                } else {
+                    room = ReplyText.tableRoom(rows: source.components(separatedBy: "\n").count - 1, look: look, width: width)
+                }
             } else {
                 #if DEBUG
                 let image = LiftTrace.time("table picture \(source.count) chars") { ReplyTable.picture(source, width: width, traits: look.traits) }
@@ -1199,11 +1330,9 @@ enum ReplyText {
                     return
                 }
                 a.image = image
-                drawn = image.size
+                room = ReplyText.room(image.size, width: width)
             }
-            let size = drawn.width > width && width > 0
-                ? CGSize(width: width, height: drawn.height * width / drawn.width) : drawn
-            a.bounds = CGRect(origin: .zero, size: size)
+            a.bounds = CGRect(origin: .zero, size: room)
             let line = NSMutableAttributedString(attachment: a)
             line.addAttributes([.replySource: copied, .font: look.body], range: NSRange(location: 0, length: line.length))
             add(line, in: blocks.count - 1)
@@ -1211,7 +1340,7 @@ enum ReplyText {
 
         private func add(_ text: NSAttributedString, in block: Int, lineSpacing: Bool = false, item: Bool = false,
                          _ configure: (NSMutableParagraphStyle) -> Void = { _ in }) {
-            var line = Line(text: NSMutableAttributedString(attributedString: text), block: block, item: item)
+            var line = Line(text: NSMutableAttributedString(attributedString: text), block: block, item: item, part: part)
             if lineSpacing { line.style.lineSpacing = look.size * ReplyMetrics.lineSpacing }
             configure(line.style)
             lines.append(line)
@@ -1260,7 +1389,7 @@ enum ReplyText {
                     text.append(NSAttributedString(string: "\n", attributes: attrs))
                 }
                 let style = line.block == nil ? none : line.style
-                text.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: text.length))
+                text.addAttributes([.paragraphStyle: style, .replyPart: line.part], range: NSRange(location: 0, length: text.length))
                 out.append(text)
             }
             // Blank lines at the start or the end of the reply take no part.
