@@ -150,7 +150,7 @@ struct OneSidebarSections: View {
                 place(String(localized: "Messages [Quote Views 4da199]"), Theme.Icon.feishuChats, id: "sidebar-messages",
                       selected: messagesOpen, indent: true, run: openMessages)
             }
-            place(String(localized: "Meeting Recording"), Theme.Icon.recording, id: "sidebar-recordings", indent: true) { show(.recordings) }
+            place(String(localized: "Recordings"), Theme.Icon.recording, id: "sidebar-recordings", indent: true) { show(.recordings) } // the page, as the drawer's row (#5517)
             place(String(localized: "Health"), Theme.Icon.health, id: "sidebar-health", indent: true) { show(.health) }
             place(String(localized: "Machines"), Theme.Icon.machines, id: "sidebar-machines", indent: true) { show(.machines) }
         }
@@ -186,7 +186,7 @@ struct OneSidebarSections: View {
         .confirmClose($ending)
     }
 
-    /// More: Messages, Meeting Recording, Health and Machines, folded under one row (#4206: the first screen on its side is
+    /// More: Messages, Recordings, Health and Machines, folded under one row (#4206: the first screen on its side is
     /// short). Open while the row picked is one of them (Messages), as the prototype's does.
     private var moreRow: some View {
         row(id: "sidebar-more", action: { withAnimation(Theme.Motion.standard) { moreOpen.toggle() } }) {

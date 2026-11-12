@@ -5,7 +5,7 @@ import XCTest
 /// the agent's chat beside it, and no Assistant | Agents switch.
 ///
 /// - the column's header (Persona's mark and name, the fold) and foot (New Chat; search and Settings);
-/// - More opens inline to Messages (when on), Meeting Recording, Health and Machines;
+/// - More opens inline to Messages (when on), Recordings, Health and Machines;
 /// - Pinned: the directions under their names with their work; All Chats over the window;
 /// - the grouping's segments under the Agents heading, one tap each, the same choice as the ⋯ menu's;
 /// - an agent opened from the list beside Persona's page, its row the selected one; a Persona row closes it;
@@ -210,7 +210,7 @@ final class OneSidebarTests: XCTestCase {
         assertOneColumnButton("Messages, the column folded")
     }
 
-    /// More opens inline to Meeting Recording, Health and Machines, and folds again; a place opens beside the column.
+    /// More opens inline to Recordings, Health and Machines, and folds again; a place opens beside the column.
     @MainActor func testMoreOpensInlineAndAPlaceOpensBeside() throws {
         try launch()
         let more = element("sidebar-more")
