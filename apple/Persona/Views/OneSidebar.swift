@@ -12,11 +12,41 @@ extension EnvironmentValues {
     /// Folds the split's list column away (the one sidebar's header button); nil outside a split.
     @Entry var splitHideList: SplitShowList? = nil
     /// Slides the list column away if it is laid over the page (the open iPhone Duo upright, #4852), after a pick that
-    /// changes the page; beside the page it stays. Nil outside a split.
-    @Entry var splitHideOverlay: SplitShowList? = nil
+    /// changes the page (`OneSidebarPick.slidesAway`); beside the page it stays. Nil outside a split.
+    @Entry var splitHideOverlay: SplitHideOverlay? = nil
     /// The system puts its bars down the side of the window (the open iPhone Duo on its side, `toolbarVerticalEdge`): Persona's
     /// page hands New Chat to the system's side column there (#4854), as the agent's chat hands its actions (#3680).
     @Entry var oneSidebarSideBars = false
+}
+
+/// What was tapped in the one sidebar's column, for whether a column laid over the page slides away after it (#4852).
+nonisolated enum OneSidebarPick: CaseIterable {
+    /// Change what the page shows: Main Chat, a place (Inbox, To-dos, Scheduled Tasks, Knowledge, More's), a Pinned
+    /// direction, a conversation from All Chats or from the search, New Chat, Messages, an agent.
+    case mainChat, place, pinned, allChatsConversation, searchResult, newChat, messages, agent
+    /// Change only the column, or open over the window: More opening or folding, Needs You / All, a grouping, the list's
+    /// ⋯, All Chats' list and the search opening, Settings.
+    case more, filter, grouping, listMenu, allChatsList, search, settings
+
+    /// The page beside the column shows something else after it.
+    var changesPage: Bool {
+        switch self {
+        case .mainChat, .place, .pinned, .allChatsConversation, .searchResult, .newChat, .messages, .agent: true
+        case .more, .filter, .grouping, .listMenu, .allChatsList, .search, .settings: false
+        }
+    }
+
+    /// The column slides away after this pick: only laid over the page (`overlays`, the open Duo upright; nil while the
+    /// posture is not read yet), only while it is out, and only after a pick that changes the page. Beside the page (on
+    /// its side, the iPad) it always stays, and a filter or a grouping never sends it away.
+    func slidesAway(overlays: Bool?, listShown: Bool) -> Bool {
+        overlays == true && listShown && changesPage
+    }
+}
+
+/// Slides a split's list column away after a pick, if `OneSidebarPick.slidesAway` says so.
+struct SplitHideOverlay {
+    var after: (OneSidebarPick) -> Void
 }
 
 enum OneSidebarMetrics {
@@ -171,7 +201,7 @@ struct OneSidebarSections: View {
         let key = model.assistantMain
         let selected = personaOpen && model.assistantCurrent != nil && model.assistantCurrent == key
         return row(id: "sidebar-main", selected: selected, action: {
-            if let key { open(key) } else { show(.newConversation) }
+            if let key { open(key, .mainChat) } else { show(.newConversation, .mainChat) }
         }) {
             glyph(Theme.Icon.conversation)
             Text("Main Chat").font(Theme.Font.body).foregroundStyle(Color.primary).lineLimit(1)
@@ -211,29 +241,29 @@ struct OneSidebarSections: View {
     }
 
     /// A Persona page beside the column: the agent open there goes, the page comes (`PadRouter`, as the iPad's tabs did).
-    private func show(_ page: ShellPage) {
-        toPersona()
+    private func show(_ page: ShellPage, _ pick: OneSidebarPick = .place) {
+        toPersona(pick)
         padRouter?.show(page)
     }
 
     /// One of Persona's conversations beside the column.
-    private func open(_ key: SessionKey) {
-        toPersona()
+    private func open(_ key: SessionKey, _ pick: OneSidebarPick) {
+        toPersona(pick)
         model.openAssistantConversation(key)
     }
 
     /// Persona's page in the detail column: no agent, not Messages. The page is built before it reads what was asked.
-    private func toPersona() {
+    private func toPersona(_ pick: OneSidebarPick) {
         leaveAgent()
         if model.selectedTab != .assistant { model.selectedTab = .assistant }
-        hideOverlay?.show()
+        hideOverlay?.after(pick)
     }
 
     /// Messages in the detail column (`OneSidebarHome`), where a phone has its tab.
     private func openMessages() {
         leaveAgent()
         model.selectedTab = .feishu
-        hideOverlay?.show()
+        hideOverlay?.after(.messages)
     }
 
     // MARK: Pinned and All Chats
@@ -261,7 +291,7 @@ struct OneSidebarSections: View {
             ?? (s.title.isEmpty || s.title == "Claude Code" ? String(localized: "New Chat [Quick Actions ea4b29]") : s.title)
         let counts = model.directionCounts[s.sessionID].flatMap { DirectionCountsText.label(working: $0.working, needsYou: $0.needsYou) }
         let name = Text(title).font(Theme.Font.body).foregroundStyle(Color.primary).lineLimit(1)
-        return row(id: "sidebar-pinned", selected: selected, action: { open(s.key) }) {
+        return row(id: "sidebar-pinned", selected: selected, action: { open(s.key, .pinned) }) {
             if let counts {
                 let work = Text(counts).font(Theme.Font.label).foregroundStyle(.secondary).lineLimit(1)
                 // The work beside the name while both fit; under it in a narrow column (the open Duo's, a quarter of its
@@ -296,7 +326,7 @@ struct OneSidebarSections: View {
         .sheet(item: $allChats) { route in
             AutoConversationsView(source: route.source) { key in
                 allChats = nil
-                open(key)
+                open(key, .allChatsConversation)
             }
         }
     }
@@ -402,7 +432,7 @@ struct OneSidebarFoot: View {
     var body: some View {
         HStack(spacing: Theme.Space.m) {
             Button {
-                toPersona()
+                toPersona(.newChat)
                 padRouter?.show(.newConversation)
             } label: {
                 // Its name while it fits, else its icon alone: at the system's width on the open Duo on its side (a
@@ -429,7 +459,7 @@ struct OneSidebarFoot: View {
         .fullScreenCover(isPresented: $fullSearch) {
             AssistantFullSearch { key in
                 fullSearch = false
-                toPersona()
+                toPersona(.searchResult)
                 model.openAssistantConversation(key)
             }
         }
@@ -449,10 +479,10 @@ struct OneSidebarFoot: View {
 
     /// Persona's page in the detail column (not an agent, not Messages), for what it is asked next; an overlaid column
     /// slides away (#4852).
-    private func toPersona() {
+    private func toPersona(_ pick: OneSidebarPick) {
         leaveAgent()
         if model.selectedTab != .assistant { model.selectedTab = .assistant }
-        hideOverlay?.show()
+        hideOverlay?.after(pick)
     }
 
     private func footButton(_ symbol: String, label: String, id: String, action: @escaping () -> Void) -> some View {

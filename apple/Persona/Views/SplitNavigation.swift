@@ -141,7 +141,7 @@ struct SplitNavigation<Sidebar: View, Empty: View, Destinations: ViewModifier>: 
             .onPreferenceChange(SidebarEdge.self) { listEnd = $0; notePosture() }
             .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minX } action: { splitStart = $0; notePosture() }
             // An agent picked, or anything else that changes the page: a list laid over the page goes (#4852).
-            .onChange(of: path) { hideOverlay() }
+            .onChange(of: path) { hideOverlay(after: .agent) }
             // Laid over the page the list comes out with nothing else moving: read it once it is out.
             .onChange(of: columns) { _, now in if now != .detailOnly { Task { notePosture() } } }
             #endif
@@ -157,7 +157,7 @@ struct SplitNavigation<Sidebar: View, Empty: View, Destinations: ViewModifier>: 
             .environment(\.splitHideList, SplitShowList { [columns = $columns] in
                 withAnimation(Theme.Motion.layout) { columns.wrappedValue = .detailOnly }
             })
-            .environment(\.splitHideOverlay, SplitShowList { hideOverlay() })
+            .environment(\.splitHideOverlay, SplitHideOverlay { hideOverlay(after: $0) })
             #endif
             #endif
         } else {
@@ -210,9 +210,10 @@ struct SplitNavigation<Sidebar: View, Empty: View, Destinations: ViewModifier>: 
     }
 
     /// A pick in a list laid over the page (the open Duo upright) changed what the page shows: the list slides away, as
-    /// the system's sidebar does on an iPad in portrait. Beside the page (on its side, the iPad) it stays.
-    private func hideOverlay() {
-        guard overlays == true, columns != .detailOnly else { return }
+    /// the system's sidebar does on an iPad in portrait. Beside the page (on its side, the iPad) it stays; which picks
+    /// count is `OneSidebarPick.slidesAway`.
+    private func hideOverlay(after pick: OneSidebarPick) {
+        guard pick.slidesAway(overlays: overlays, listShown: columns != .detailOnly) else { return }
         withAnimation(Theme.Motion.layout) { columns = .detailOnly }
     }
     #endif
