@@ -196,13 +196,16 @@ struct SplitNavigation<Sidebar: View, Empty: View, Destinations: ViewModifier>: 
     }
 
     #if os(iOS)
-    /// The posture: the page starting before the list ends is the page under the list. Read only while the list is out
-    /// (away, both postures look the same).
+    /// The posture: the page starting under the list (at the split's leading edge) is the page under the list; beside it,
+    /// it starts where the list ends. Read only while the list is out (away, both postures look the same).
     private func notePosture() {
         // As the split first lays itself out the list is narrower than any it takes, and the page slides in from before
         // it: read then, an iPad's list looked laid over its page, and its closing went unremembered.
         guard columns != .detailOnly, listEnd - splitStart >= Theme.Size.sidebarMinPhone, pageStart >= splitStart else { return }
-        let now = pageStart < listEnd - 1
+        // In the first half of the list, not merely before its end: while the handle drags the list the page's edge moves
+        // a frame before the list's, and `pageStart < listEnd - 1` read every such frame as laid over, so a list dragged
+        // closed on the open Duo on its side was not remembered closed (SplitDividerTests, 2026-11-13).
+        let now = pageStart < splitStart + (listEnd - splitStart) / 2
         if overlays != now { overlays = now }
     }
 
@@ -236,7 +239,8 @@ enum SplitColumns {
 /// cards (they wrapped every title); dragged on the line beside it (`SplitDividerHandle`, #2624), that width. One
 /// expression whatever the width: a modifier coming or going would build the list again (its filters, its scroll).
 /// iPhone Duo: `Theme.Size.sidebarPhone` (ChatGPT's width on the open Duo, #4206; the system's was about 199 pt upright)
-/// until one is kept from a drag; that takes the column once, at the drag's end, never during it.
+/// until one is kept from a drag. The column follows the drag as it goes, as on the iPad: `dragged ?? sidebarPhone` is one
+/// expression, so a width arriving mid-drag does not build the list again.
 struct SidebarWidth: ViewModifier {
     @Environment(\.splitListWidth) private var dragged
 
@@ -441,10 +445,12 @@ struct SplitDividerHandle: ViewModifier {
     /// else the default as laid out.
     private var current: CGFloat { width > 0 ? fitted(CGFloat(width)) : max(least, measured) }
 
-    /// The width the column is given: the one being dragged to, else the one kept; nil: the default. On iPhone Duo a
-    /// column with no width yet takes one only when the drag ends (`SidebarWidth`).
+    /// The width the column is given: the one being dragged to, else the one kept; nil: the default. The column
+    /// follows the finger while the handle is held, on the iPad and the Duo alike, the first drag too: the Duo's
+    /// column always takes its width through one expression (`SidebarWidth`), so a width arriving mid-drag no longer
+    /// builds the list again (#2932 waited for the drag's end until it did).
     private var applied: CGFloat? {
-        if let live, !(phone && width == 0) { return live.width }
+        if let live { return live.width }
         return width > 0 ? current : nil
     }
 

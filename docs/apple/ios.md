@@ -636,11 +636,14 @@ Apps built with older Xcode do not extend under the status bar and camera on Duo
   its top folds it and the page's top-left one only brings it back; compact still uses a drawer.
 - **The line between the list and the page** (#2624, `SplitDividerHandle`; iPad and open Duo), as Feishu's. Since the one sidebar (#4206) it is the one column's, `agents.list`: Persona's page has no history column of its own there:
   - A short handle on the line drags the list column wider or narrower. The bounds are iPad 340–480 pt and Duo from 200 pt, and the page keeps at least 300 pt; the page takes the rest.
+    The column follows the finger while the handle is held, on the iPad and the open Duo alike, the first drag too (as the system's own
+    sidebar, Feishu, Slack and Finder). Until 2026-11-13 the Duo's first drag left the column still and moved it only on release: its column had no
+    width of its own then, and one appearing mid-drag built the list again (#2932). Since it always has one (`Theme.Size.sidebarPhone`) that is gone.
   - Dragged more than 80 pt past the least, the list closes and the handle waits at the page's leading edge; dragged right from there, the list comes back.
   - Width and closing are remembered per list: `agents.list.width` / `.closed`, `assistant.list.width` / `.closed`. Until dragged, the column has its
     default width (`SidebarWidth`): the iPad's 340–480 pt (400 ideal), the open Duo's 320 pt (`Theme.Size.sidebarPhone`, "One sidebar").
   - The column's own button closes and opens it too, remembered the same. A double tap on the handle gives the column its default width again.
-  - The split starts closed when the list was left closed (`SplitDividerHandle.startsClosed`). Only a list beside the page is remembered: laid over it (the open Duo upright, #4852) its going away is a pick's, and nothing is kept until the posture is read (`SplitNavigation.notePosture`, once the list is out at least `sidebarMinPhone` wide; the split's own first layout, a narrow list with the page sliding in, is not read).
+  - The split starts closed when the list was left closed (`SplitDividerHandle.startsClosed`). Only a list beside the page is remembered: laid over it (the open Duo upright, #4852) its going away is a pick's, and nothing is kept until the posture is read (`SplitNavigation.notePosture`, once the list is out at least `sidebarMinPhone` wide; the split's own first layout, a narrow list with the page sliding in, is not read). Laid over means the page starts in the list's first half: while the handle drags the list the page's edge moves a frame before the list's, and "before the list ends" read those frames as laid over, so a list dragged closed on the Duo on its side was not remembered (2026-11-13).
   - VoiceOver: adjusting the handle resizes the list by 40 pt, Hide List / Show List close and open it.
   - `SplitDividerTests` (`-openSplitFresh YES` starts the lists at their default width).
 - **Readable width**: chats and the Persona home page are at most 760pt wide (`ChatView.readableWidth`), centered when wider; the top bar still spans the full width.
