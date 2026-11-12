@@ -244,13 +244,15 @@ enum SplitColumns {
 /// expression, so a width arriving mid-drag does not build the list again.
 struct SidebarWidth: ViewModifier {
     @Environment(\.splitListWidth) private var dragged
+    @Environment(\.splitIdiom) private var splitIdiom
 
     func body(content: Content) -> some View {
-        if UIDevice.current.userInterfaceIdiom == .pad || UIDevice.current.userInterfaceIdiom == .mac {
+        let idiom = splitIdiom ?? UIDevice.current.userInterfaceIdiom
+        if idiom == .pad || idiom == .mac {
             content.navigationSplitViewColumnWidth(min: dragged ?? Theme.Size.sidebarMin, ideal: dragged ?? Theme.Size.sidebar,
                                                    max: dragged ?? Theme.Size.sidebarMax)
                 .background(GeometryReader { g in Color.clear.preference(key: SidebarEdge.self, value: g.frame(in: .global).maxX) })
-        } else if UIDevice.current.userInterfaceIdiom == .phone {
+        } else if idiom == .phone {
             content.navigationSplitViewColumnWidth(dragged ?? Theme.Size.sidebarPhone)
             // Where the column ends, for the handle on the line beside it.
             .background(GeometryReader { g in Color.clear.preference(key: SidebarEdge.self, value: g.frame(in: .global).maxX) })
@@ -275,9 +277,10 @@ struct SidebarTopFill: ViewModifier {
     /// The column's own color, where it has one (the one sidebar on the iPad, #4855); nil: the system sidebar's.
     var color: Color? = nil
     @State private var edge: CGFloat = 0
+    @Environment(\.splitIdiom) private var splitIdiom
 
     func body(content: Content) -> some View {
-        if UIDevice.current.userInterfaceIdiom == .pad {
+        if (splitIdiom ?? UIDevice.current.userInterfaceIdiom) == .pad {
             content
                 .onPreferenceChange(SidebarEdge.self) { edge = $0 }
                 .background(alignment: .topLeading) {
@@ -307,6 +310,9 @@ struct SplitDetail: Equatable {
 extension EnvironmentValues {
     /// The width the list column was dragged to on the line beside it (#2624, `SplitDividerHandle`); nil: the default (`SidebarWidth`).
     @Entry var splitListWidth: CGFloat?
+    /// The device the list column is laid out for (`SidebarWidth`, `SidebarTopFill`); nil: this one. Look tests set it to
+    /// draw the iPad's column and the open Duo's on one simulator (`OneSidebarLookTests`, #6061).
+    @Entry var splitIdiom: UIUserInterfaceIdiom?
     @Entry var splitDetail: SplitDetail?
     /// Pushes a page by value onto the stack the view is in (an extension's `push`, docs/extensions/extensions.md「Page navigation」): its
     /// destination is registered with the list's.
