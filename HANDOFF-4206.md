@@ -37,6 +37,8 @@ The commits of the last stretch (`git log --first-parent`):
 | `ad1f80d94` | Merge `origin/main` (110 commits). Conflicts in `ChatsView` and `RootView` against #5641 (selecting Agents returns to the list): `ChatsView` keeps main's `agentNavigationLink` and folds the one sidebar's `openLink` into it (under the one sidebar a row is always a button that sets the bound path); `RootView` keeps the one sidebar on iOS and main's `selectHomeTab` tab binding elsewhere. `AgentsTabNavigationTests.testNativeTabReselectionAndSwitchBackShowList` skips under the one sidebar (no tabs there); `test_apple_rename.py` expects main's tab binding; `DESIGN_SYSTEM.md` 3.5 names the one sidebar. |
 | `011dca2f6`, `72c6d0b43` | Merge `origin/main` again (6 commits, no conflicts; the second brings main's own build fix #5899). |
 | `5eaff049d` | **The open Duo's sidebar is 320 pt** (below). |
+| `64b5b90ad` | Handoff after the merge and the width change. |
+| `234ba0b59` | **The column follows the handle while it is dragged** on the Duo too (below). Refs #2624. |
 
 ### The color fix (`3570fe23a`)
 
@@ -67,7 +69,27 @@ upright (669 × 951 pt) is **320 pt** wide (48 % of the screen). Ours had no wid
 `OneSidebarTests.testTheColumnHasThePlacesPinnedAndAgents` checks the width (320 ± 4 pt on the Duo, at least 320 on the
 iPad) and the tests launch with `-agents.list.width 0`. Docs: `docs/apple/ios.md`, "One sidebar" ("The column's width").
 
-## 3. Test status (on `5eaff049d`, mock hub with `MOCK_LEADERS=1`, simulators, Xcode 27.1; 26.0 not verified)
+### The drag follows the finger (`234ba0b59`)
+
+The owner saw only the handle move while dragging it on the open Duo; the column jumped to the new width on release.
+`SplitDividerHandle.applied` held back the live width on a phone until something had been dragged once (`!(phone && width == 0)`,
+#2932: the Duo's column then had no width of its own, and one arriving mid-drag built the list again). Since `5eaff049d` the
+Duo's column always takes its width through one expression, so the condition is gone and the column follows the finger as on
+the iPad. Checked from recordings of a slow drag held 3 s on the Duo on its side: before, the column stayed at 320 pt for the
+whole drag and jumped to 420 on release; after, 320 → 349 → 396 → 420 pt while held. The list kept its scroll, its Needs You
+filter and More open. The iPad already followed (400 → 421 → 458 → 480 pt).
+
+Following live exposed a misread posture: while the list narrows, the page's edge moves a frame before the list's, and
+`notePosture`'s "page starts before the list ends" read those frames as the list laid over the page, so a list dragged closed
+on the Duo on its side was not remembered (`SplitDividerTests.testDraggedPastItsLeastTheListClosesAndComesBackFromTheEdge`
+failed twice). Laid over now means the page starts in the list's first half.
+
+`SplitDividerTests` got no new assertion for "wider while still held": XCUITest's `press(forDuration:thenDragTo:…thenHoldForDuration:)`
+returns only after the finger lifts, so a test cannot read the width mid-drag. The evidence is the recordings' frames above.
+
+## 3. Test status (mock hub with `MOCK_LEADERS=1`, simulators, Xcode 27.1; 26.0 not verified)
+
+On `5eaff049d`; one `build-for-testing`, then `test-without-building` per device and posture.
 
 One `build-for-testing`, then `test-without-building` per device and posture.
 
@@ -82,12 +104,53 @@ Before the width change, on the merge `72c6d0b43`, the Duo gave the same counts 
 - Skips are by design: Duo-only tests skip on the iPad; upright-only and beside-the-page-only tests skip in the other posture.
 - The one failure, `TreeSwapFoldTests.testHealthReportsStillGoUpAfterAFold`, **also fails on `main`**; not this PR's.
 
+On `234ba0b59` (the drag fix, `SplitNavigation.swift` only), the tests it touches:
+
+| Where | Tests | Result |
+|---|---|---|
+| iPad | `SplitDividerTests` | 2 run: **2 passed** |
+| iPhone Duo, Open, on its side | `SplitDividerTests` | 2 run: **2 passed** (before the posture fix: 1 failed, the closing not kept; failed again alone) |
+| iPhone Duo, Open, upright | `SplitDividerTests` and the two upright `OneSidebarTests` (they depend on the posture reading) | 4 run: **4 passed** |
+
+## Known issue, not fixed: on its side, a drag puts the page under the column
+
+On the open Duo **on its side**, after the handle is dragged once, the split shows the column **over** the page: the page goes
+full width under the column and is dimmed, and stays so (folding and unfolding the column brings it back beside the page until
+the next drag). The iPad keeps the page beside the column while dragging.
+
+Steps (mock hub, the Duo opened in Device Hub and turned on its side):
+
+1. Launch on Persona's page with the column out (`-agents.list.closed NO`); the page sits beside the column.
+2. Drag the handle on the column's edge 100 pt right and let go; drag it back.
+3. The page is now under the column: Persona's face sits where it is with the column folded (x 334 pt instead of 494),
+   and the page is dimmed (see `duo-side.mp4`, 50–60 s, with the owner's videos).
+
+Compared on the same steps with a local probe (the face's x after each step): it happens on `234ba0b59`, on `5eaff049d` and
+on `72c6d0b43` (before the 320 pt width), so it is **not** from the drag fix or the width change; on `72c6d0b43` the column
+had a width kept from an earlier drag. Likely the system's split choosing its overlay display mode when the column's width
+changes through `navigationSplitViewColumnWidth`. `SplitNavigation.notePosture` then also reads it as laid over, so a later
+closing is not remembered. Left for discussion with the owner.
+
+## Experiment, not kept: the system's own divider on the iPad
+
+iPadOS 26 lets a split's divider be dragged by itself (WWDC25 session 282). With `SplitDividerHandle` turned off locally and only
+`SidebarWidth`'s `navigationSplitViewColumnWidth(min: 340, ideal: 400, max: 480)` left, a slow synthetic drag on the column's edge:
+
+- **iPad**: the divider drags and the column follows the finger (400 → 420 → 441 → 461 → 471 pt while moving), stays where it is
+  let go (471, then 351), and stops at the min (340) when dragged to the far left: it does **not** fold the column. Not checked:
+  whether the system keeps the width across launches.
+- **iPhone Duo on its side**: nothing moves; the column stays at 320 pt (the phone ignores the column's width range).
+
+So on the iPad the system's divider could replace our handle's resizing, but not its closing past the least or its remembered
+width, and the Duo still needs our handle. The change was reverted; nothing of it is on the branch.
+
 ## 4. Status
 
 The six screenshots and the montage were retaken on `5eaff049d` (2026-11-13) and checked: the size, one top-left button,
 one color down the column (dark 23,23,23, light 249,249,249), and the column's width (iPad 400 pt, the Duo 320 pt upright
-and on its side). They live outside the repository with the owner, with short videos of the one sidebar in use, and are
-**waiting for the owner's review**. Nothing has been posted on GitHub; no PR yet.
+and on its side). Three videos of the one sidebar in use (iPad, the Duo upright, the Duo on its side; dark, demo data) were
+recorded on `234ba0b59`. All of it lives outside the repository with the owner and is **waiting for the owner's review**;
+whether to merge is to be discussed. Nothing has been posted on GitHub; no PR yet.
 
 Putting the Duo into the Open posture needs the Device Hub window (Xcode's Devices window). No command line
 way was found: `simctl` has no posture command, `simctl io … screenConfig power` changes a panel's power but not the
