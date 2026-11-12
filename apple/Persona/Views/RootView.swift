@@ -210,6 +210,9 @@ struct RootView: View {
         #endif
         #if DEBUG
         .overlay(alignment: .bottomTrailing) { PerfCountProbe() }
+        #if os(iOS) || os(visionOS)
+        .stillUI() // `-showStillUI YES`: no SwiftUI animations (UI tests, #6061)
+        #endif
         // UI tests see the small window (VNC in picture in picture, #1343), which is the system's.
         .overlay(alignment: .topLeading) {
             if model.vncPiP != nil {

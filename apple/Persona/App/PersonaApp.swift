@@ -159,6 +159,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             }
         }
         PopFrames.startIfAsked()
+        StillUI.startIfAsked() // `-showStillUI YES`: no animations (UI tests, #6061)
         // `-openChatsFresh YES`: no chat kept on disk from an earlier run (LiveUpdateTests: churned steps piled up), every
         // report folded again (ReportFoldUITests), and nowhere a chat was left (`chat.read.<session>`: Persona's
         // conversations reopen there too since #1666).
