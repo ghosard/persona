@@ -166,7 +166,6 @@
   "check_skip_unknown": "Automatic completion was excluded for this check; the hub gave an unrecognized exclusion.",
   "check_would_close": "This check indicates the work qualifies for automatic completion. It has not marked the task complete.",
   "check_would_not_close": "This check does not indicate automatic completion.",
-  "check_applied_closed": "Applied: the task is marked complete.",
   "check_applied_review": "Applied: the task now waits for its supervisor's review.",
   "check_applied_kept": "Applied: this verdict is kept on the task, which stays open.",
   "check_delivery": "Delivery: {state}",

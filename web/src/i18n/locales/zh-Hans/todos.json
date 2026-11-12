@@ -166,7 +166,6 @@
   "check_skip_unknown": "本次检查未参与自动完成；Hub 返回了尚未识别的排除原因。",
   "check_would_close": "本次检查认为工作符合自动完成条件，但并未将任务标为完成。",
   "check_would_not_close": "本次检查未表明任务符合自动完成条件。",
-  "check_applied_closed": "已写回：任务已标为完成。",
   "check_applied_review": "已写回：任务进入督办验收，等待监督方审核。",
   "check_applied_kept": "已写回：判定结果记在任务上，任务保持未完成。",
   "check_delivery": "交付：{state}",

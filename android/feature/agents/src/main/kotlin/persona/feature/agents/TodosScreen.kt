@@ -24,6 +24,7 @@ import persona.core.domain.tasks.deliveredAwaitingReview
 import persona.core.domain.tasks.shownState
 import persona.core.domain.tasks.waitsForOwner
 import persona.core.domain.tasks.checksAsOpen
+import persona.core.domain.tasks.seenCanFile
 import persona.core.domain.tasks.supersededFailedStarts
 import persona.core.domain.tasks.triageTodos
 import androidx.compose.foundation.shape.CircleShape
@@ -461,7 +462,7 @@ fun TodosScreen(
                                 onDone = setDone,
                                 onDelete = delete,
                                 onRestore = { restored = restores.restore(group.lead.id, System.currentTimeMillis()) },
-                                onSeen = if (seenOn && section == TriageSection.JustDone) ({
+                                onSeen = if (seenOn && section == TriageSection.JustDone && group.lead.seenCanFile) ({
                                     gotIt(group.lead, group.triage.getValue(group.lead.id).last)
                                 }) else null,
                             )

@@ -268,8 +268,8 @@ struct TodosView: View {
     private func todoRow(_ todo: TodoItem, triage: TodoTriage?, related: TodoRelatedToggle? = nil) -> some View {
         // a failed start waiting on the owner reads open: its checkbox and swipe close it (#3713)
         let open = TodoTriageLogic.checksAsOpen(todo, triage)
-        // Got It on a Just finished row (#5707), while the hub keeps seen marks
-        let seen: (() -> Void)? = triage?.section == .justDone && model.hubFeatures.contains(TodoSeen.feature)
+        // Got It only when Seen really files the row; acceptance is a separate action (#5707, #5732).
+        let seen: (() -> Void)? = triage?.section == .justDone && TodoTriageLogic.seenCanFile(todo) && model.hubFeatures.contains(TodoSeen.feature)
             ? { markSeen(todo, after: triage?.last ?? .distantPast) } : nil
         return NavigationLink(value: TodoDetailRoute(id: todo.id)) {
             TodoRow(todo: todo, triage: triage, onToggleDone: { store.toggleDone(todo, done: open) },

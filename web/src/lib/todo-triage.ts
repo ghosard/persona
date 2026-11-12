@@ -87,6 +87,12 @@ function shelvable(todo: Todo, now: number): boolean {
   return (todo.agents ?? []).length > 0 || Boolean(todo.origin);
 }
 
+/** Whether Got it can file a finished turn under Done. Seen is not acceptance: a supervised task, a pending review and
+ *  an unaccepted live delivery stay open, so their rows must not offer an action that says "Moved to Done" (#5732). */
+export function seenCanFile(todo: Todo): boolean {
+  return todo.delivery?.state !== "live" && reviewState(todo) !== "pending_review" && !todo.supervision?.supervisor;
+}
+
 /**
  * A to-do's section by the SOP's table (docs/assistant/todo-status-sop.md, "Decision table"), first match wins:
  *
@@ -130,7 +136,7 @@ export function triage(todo: Todo, lookup: SessionLookup | undefined, now: numbe
   // Live is delivery, not acceptance: an unreviewed live task stays open and awaiting review, however old (#5732).
   if (todo.delivery?.state === "live") return at("just_done", "finished_unseen");
   const finished = status === "unread" || reviewState(todo) === "pending_review" || (ask && !ask.outcome) || ask?.outcome === "done";
-  const acceptanceRequired = reviewState(todo) === "pending_review" || Boolean(todo.supervision?.supervisor);
+  const acceptanceRequired = !seenCanFile(todo);
   if (finished && (!seen(last) || acceptanceRequired)) return at("just_done", "finished_unseen");
   if (openPR(todo)) return at("pr", "pr_open");
   // seen since it last moved, and no PR waits on the owner

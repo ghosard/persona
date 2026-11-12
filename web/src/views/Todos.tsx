@@ -67,7 +67,7 @@ import { formatDate, t } from "../i18n";
 import { groupTodosByProject, treeStateLabel, type TodoProjectGroup, type TreeState } from "../lib/todo-tree";
 import { directionTitle, groupsByDirection, useDirectionTree, type Direction } from "../lib/direction-tree";
 import { DirectionCountsText } from "./DirectionMarks";
-import { FOLDED_SECTIONS, TRIAGE_SECTIONS, checksAsOpen, lastActivity, supersededFailedStarts, triage, triageTodos, type TriageGroup, type TriageSection } from "../lib/todo-triage";
+import { FOLDED_SECTIONS, TRIAGE_SECTIONS, checksAsOpen, lastActivity, seenCanFile, supersededFailedStarts, triage, triageTodos, type TriageGroup, type TriageSection } from "../lib/todo-triage";
 import {
   TODO_LIST_FILTERS,
   TODO_LIST_SORTS,
@@ -1553,7 +1553,7 @@ const TodoListItem = memo(function TodoListItem({
         )}
 
         {/* Just finished: Got it files it under Done at once (#5707); nothing else about it changes */}
-        {section === "just_done" && onSeen && (
+        {section === "just_done" && seenCanFile(todo) && onSeen && (
           <div className="mt-1.5" onClick={(e) => e.stopPropagation()}>
             <Button
               tone="secondary"

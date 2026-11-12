@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { Session } from "./types";
 import { makeSessionLookup, todoStatus, todoStatusLabel, type Todo } from "./todos";
 import { checkCount, checklist, reviewBadge, type Supervision } from "./supervision";
-import { FOLDED_SECTIONS, lastActivity, relatedKeys, SHELVE_AFTER_MS, supersededFailedStarts, todoBucket, TRIAGE_SECTIONS, triage, triageTodos } from "./todo-triage";
+import { FOLDED_SECTIONS, lastActivity, relatedKeys, seenCanFile, SHELVE_AFTER_MS, supersededFailedStarts, todoBucket, TRIAGE_SECTIONS, triage, triageTodos } from "./todo-triage";
 import { resetRestoredCache, restoreTodo } from "./todo-restore";
 
 const NOW = Date.parse("2026-11-10T12:00:00Z");
@@ -106,6 +106,9 @@ describe("triage (docs/assistant/todo-status-sop.md, decision table)", () => {
     expect(triage(todo("f", { start_error: "x", done_at: hoursAgo(2), seen_at: hoursAgo(1) }), lookup, NOW, 0, true)).toMatchObject({ section: "done", rule: "superseded" });
     // a supervised finished turn still needs acceptance after being seen
     expect(at(todo("t", { agents: [agent("unseen")], seen_at: hoursAgo(0.5), supervision: { supervisor: "main" } }))).toMatchObject({ section: "just_done", rule: "finished_unseen" });
+    expect(seenCanFile(todo("t", { agents: [agent("unseen")] }))).toBe(true);
+    expect(seenCanFile(todo("t", { agents: [agent("unseen")], supervision: { supervisor: "main" } }))).toBe(false);
+    expect(seenCanFile(todo("t", { delivery: { state: "live", at: hoursAgo(2) } }))).toBe(false);
     // a mark that does not parse is no mark
     expect(at(todo("t", { agents: [agent("unseen")], seen_at: "not a time" })).section).toBe("just_done");
   });

@@ -268,9 +268,9 @@ func (s *Service) backgroundThere(ctx context.Context, cfg Settings, id string) 
 
 // backgroundSignedOut: background supervisor c, started before this manager, ended its last turn "Not logged in". It was
 // made in a new private profile with no login, as every conversation the hub started was until #6015, and a conversation
-// cannot move to another profile: it counts as gone, so one that starts signed in replaces it (ensureBackground) and what
-// waited for it moves on. One this manager started is already in the signed-in profile (startConversation): replacing it
-// would not sign it in, only make a new conversation at every signal.
+// cannot move to another profile: it counts as gone, and its queued legacy work moves to main rather than starting a
+// replacement (#5732). One this manager started is already in the signed-in profile (startConversation): treating it as
+// gone would only move its work at every signal.
 func (s *Service) backgroundSignedOut(cfg Settings, c proto.Session) bool {
 	at := cfg.BackgroundSupervisorAt
 	return c.TurnErrorCode == proto.TurnErrorNotLoggedIn && c.SessionID == cfg.BackgroundSupervisor && at != nil && at.Before(s.born)

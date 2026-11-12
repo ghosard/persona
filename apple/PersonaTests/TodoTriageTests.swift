@@ -137,8 +137,12 @@ struct TodoTriageTests {
         #expect(accepted.section == .done && accepted.rule == .accepted)
         let deployed = at(todo("t") { $0.delivery = .init(state: "live", at: ago(2)); $0.seenAt = ago(1) })
         #expect(deployed.section == .justDone && deployed.rule == .finishedUnseen)
-        let supervised = at(todo("t", agents: ["unseen"]) { $0.supervision = TaskSupervision(supervisor: "main"); $0.seenAt = ago(0.5) })
+        let supervisedTodo = todo("t", agents: ["unseen"]) { $0.supervision = TaskSupervision(supervisor: "main"); $0.seenAt = ago(0.5) }
+        let supervised = at(supervisedTodo)
         #expect(supervised.section == .justDone && supervised.rule == .finishedUnseen)
+        #expect(TodoTriageLogic.seenCanFile(todo("ordinary", agents: ["unseen"])))
+        #expect(!TodoTriageLogic.seenCanFile(supervisedTodo))
+        #expect(!TodoTriageLogic.seenCanFile(todo("live") { $0.delivery = .init(state: "live", at: ago(2)) }))
         let failed = todo("f", done: 2) { $0.startError = "x"; $0.seenAt = ago(1) }
         let superseded = TodoTriageLogic.triage(failed, lookup: lookup, now: now, superseded: true)
         #expect(superseded.section == .done && superseded.rule == .superseded)

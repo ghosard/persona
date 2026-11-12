@@ -142,10 +142,10 @@ to-do with priority `high`, still asks the owner with the card, as before.
 Seen (#5707) files an ordinary finished turn that has no supervising assistant and needs no acceptance. It is a reading
 receipt, not delivery acceptance:
 
-- **Got it** on a Delivered · awaiting review row (a button under its words, and on iOS a leading swipe action) marks it seen.
-  An ordinary unsupervised finished turn goes to Done at once, before the hub answers; a toast says so with **Undo**, which
-  takes the mark off. A failed write puts the row back and says why. A supervised task or unaccepted delivery records the
-  same receipt but stays in Delivered · awaiting review and open until main-chat acceptance or explicit completion.
+- **Got it** on an ordinary, unsupervised Delivered · awaiting review row (a button under its words, and on iOS a leading
+  swipe action) marks it seen and files it under Done at once, before the hub answers; a toast says so with **Undo**, which
+  takes the mark off. A failed write puts the row back and says why. A supervised task or unaccepted delivery does not offer
+  this action: Seen cannot accept it, so a button that says it moved to Done would be false.
 - **Opening it** counts too: the iPhone and Android mark it seen when its page opens; the web when the page leaves it
   (another to-do, the list, another page), so its row does not move while it is read. Nothing is said about it. The Mac
   (frozen) does neither and files what another device marked.

@@ -168,6 +168,12 @@ nonisolated enum TodoTriageLogic {
         return a
     }
 
+    /// Got It can file only an ordinary finished turn. Seen is not acceptance, so supervised / pending / live work must
+    /// not offer an action that claims it moved to Done (#5732).
+    static func seenCanFile(_ todo: TodoItem) -> Bool {
+        todo.delivery?.state != "live" && todo.reviewState != .pendingReview && (todo.supervision?.supervisor ?? "").isEmpty
+    }
+
     /// A to-do's section by the SOP's decision table, first match wins:
     ///
     ///  1. failedStart    the task's agent never started                    → Waiting on you, Done after 48 h;
@@ -213,7 +219,7 @@ nonisolated enum TodoTriageLogic {
         if todo.delivery?.state == "live" { return at(.justDone, .finishedUnseen) }
         let finished = status == .unread || review == .pendingReview || (ask != nil && (ask?.outcome ?? "").isEmpty)
             || ask?.outcome == "done"
-        let acceptanceRequired = review == .pendingReview || !(todo.supervision?.supervisor ?? "").isEmpty
+        let acceptanceRequired = !seenCanFile(todo)
         if finished, !seen(last) || acceptanceRequired { return at(.justDone, .finishedUnseen) }
         if openPR(todo) { return at(.pr, .prOpen) }
         // seen since it last moved, and no PR waits on the owner

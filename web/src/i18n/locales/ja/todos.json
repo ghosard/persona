@@ -166,7 +166,6 @@
   "check_skip_unknown": "今回の確認では自動完了の対象外となりました。ハブが返した除外理由は認識できません。",
   "check_would_close": "今回の確認では自動完了の条件を満たしていますが、タスクは完了に変更されていません。",
   "check_would_not_close": "今回の確認では自動完了の条件を満たしていません。",
-  "check_applied_closed": "反映済み：タスクを完了にしました。",
   "check_applied_review": "反映済み：タスクは監督者のレビュー待ちになりました。",
   "check_applied_kept": "反映済み：この判定をタスクに記録しました。タスクは未完了のままです。",
   "check_delivery": "提供状況：{state}",

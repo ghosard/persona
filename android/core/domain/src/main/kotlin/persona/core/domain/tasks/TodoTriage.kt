@@ -115,6 +115,11 @@ private fun Todo.shelvable(now: Long, zone: ZoneId): Boolean {
     return agents.isNotEmpty() || !origin.isNullOrEmpty()
 }
 
+/** Got it can file only an ordinary finished turn. Seen is not acceptance, so supervised / pending / live work must not
+ *  offer an action that claims it moved to Done (#5732). */
+val Todo.seenCanFile: Boolean
+    get() = delivery?.state != "live" && reviewState != "pending_review" && supervision?.supervisor.isNullOrEmpty()
+
 /**
  * A to-do's section by the SOP's decision table, first match wins:
  *
@@ -162,7 +167,7 @@ fun Todo.triage(
     // Live is delivery, not acceptance: an unreviewed live task stays open and awaiting review, however old (#5732).
     if (delivery?.state == "live") return at(TriageSection.JustDone, TriageRule.FinishedUnseen)
     val finished = status == TriageStatus.Unread || review == "pending_review" || (ask != null && ask.outcome.isNullOrEmpty()) || ask?.outcome == "done"
-    val acceptanceRequired = review == "pending_review" || !supervision?.supervisor.isNullOrEmpty()
+    val acceptanceRequired = !seenCanFile
     if (finished && (!seen(last) || acceptanceRequired)) return at(TriageSection.JustDone, TriageRule.FinishedUnseen)
     if (hasOpenPR) return at(TriageSection.Pr, TriageRule.PrOpen)
     // seen since it last moved, and no PR waits on the owner

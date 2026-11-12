@@ -303,6 +303,9 @@ class TodoTriageTest {
         assertEquals(TriageSection.JustDone to TriageRule.FinishedUnseen, deployed.section to deployed.rule)
         val supervised = at(todo("t", agents = listOf(agent("unseen")), supervision = Supervision(supervisor = "main")).copy(seenAt = minutesAgo(30)))
         assertEquals(TriageSection.JustDone to TriageRule.FinishedUnseen, supervised.section to supervised.rule)
+        assertTrue(todo("ordinary", agents = listOf(agent("unseen"))).seenCanFile)
+        assertFalse(todo("supervised", agents = listOf(agent("unseen")), supervision = Supervision(supervisor = "main")).seenCanFile)
+        assertFalse(todo("live", delivery = TodoDelivery(state = "live", at = hoursAgo(2))).seenCanFile)
     }
 
     @Test

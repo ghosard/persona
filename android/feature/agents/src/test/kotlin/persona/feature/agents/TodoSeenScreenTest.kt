@@ -40,8 +40,11 @@ import org.robolectric.annotation.GraphicsMode
 import persona.core.contracts.FeedItem
 import persona.core.contracts.FeedResponse
 import persona.core.contracts.ServerEvent
+import persona.core.contracts.Session
+import persona.core.contracts.Supervision
 import persona.core.contracts.TaskPlan
 import persona.core.contracts.Todo
+import persona.core.contracts.TodoAgent
 import persona.core.contracts.api.ConnectionState
 import persona.core.contracts.api.HubConnection
 import persona.core.contracts.api.TasksApi
@@ -62,7 +65,9 @@ class TodoSeenScreenTest {
     private val now = Instant.parse("2026-11-05T09:30:00Z")
     private val notes = Todo("notes", title = "Write the release notes", notes = "Synthetic release summary",
         origin = "conv", createdAt = "2026-11-05T07:30:00Z", updatedAt = "2026-11-05T09:00:00Z",
-        doneAt = "2026-11-05T09:00:00Z")
+        agents = listOf(TodoAgent(machineId = "m", sessionId = "notes")))
+    private val noteSession = Session(machineId = "m", sessionId = "notes", state = "unread", status = "idle",
+        updatedAt = "2026-11-05T09:00:00Z")
     private val open = Todo("open", title = "Back up the NAS", createdAt = "2026-11-05T08:00:00Z")
 
     private class Api(var rows: List<Todo>, supported: Boolean = true) : TasksApi {
@@ -125,9 +130,9 @@ class TodoSeenScreenTest {
                     val todos by store.todos.collectAsState()
                     Box(Modifier.testTag("shot").width(400.dp).height(shotHeight.dp).background(PersonaTheme.palette.background)) {
                         detailId?.let { id ->
-                            TodoDetailScreen(id, todos, emptyList(), emptyList(), store, onBack = {}, onOpenSession = {},
+                            TodoDetailScreen(id, todos, emptyList(), listOf(noteSession), store, onBack = {}, onOpenSession = {},
                                 onHandOff = {}, now = now)
-                        } ?: TodosScreen(todos, emptyList(), store, onBack = {}, onOpenTodo = {}, now = now)
+                        } ?: TodosScreen(todos, listOf(noteSession), store, onBack = {}, onOpenTodo = {}, now = now)
                     }
                 }
             }
@@ -149,7 +154,7 @@ class TodoSeenScreenTest {
         openList(api)
         rule.onNodeWithText("Got it").performClick()
         rule.waitForIdle()
-        assertTrue("row left Just finished before the hub answered", sectionAbsent("Just finished"))
+        assertTrue("row left Just finished before the hub answered", sectionAbsent("Delivered · awaiting review"))
         assertEquals(listOf("notes" to true), api.sent)
         val (message, undo) = feedback.notices.single()
         assertEquals("Moved to Done", message)
@@ -159,7 +164,7 @@ class TodoSeenScreenTest {
         undo!!.run()
         rule.waitForIdle()
         assertEquals(listOf("notes" to true, "notes" to false), api.sent)
-        assertTrue("Undo restored Just finished", !sectionAbsent("Just finished"))
+        assertTrue("Undo restored Just finished", !sectionAbsent("Delivered · awaiting review"))
         assertTrue(feedback.failures.isEmpty())
     }
 
@@ -168,7 +173,7 @@ class TodoSeenScreenTest {
         openList(api)
         rule.onNodeWithText("Got it").performClick()
         rule.waitForIdle()
-        assertTrue("the refused row is back", !sectionAbsent("Just finished"))
+        assertTrue("the refused row is back", !sectionAbsent("Delivered · awaiting review"))
         assertEquals("hub unavailable", feedback.failures.single().message)
     }
 
@@ -194,6 +199,15 @@ class TodoSeenScreenTest {
         val api = Api(listOf(open))
         openDetail(api, open.id)
         assertTrue(api.sent.isEmpty())
+    }
+
+    @Test fun supervisedDeliveryOffersNoFalseDoneAction() {
+        val supervised = notes.copy(supervision = Supervision(supervisor = "main", state = "pending_review"))
+        val api = Api(listOf(supervised))
+        openDetail(api, notes.id)
+        assertTrue("Seen is not acceptance", sectionAbsent("Got it"))
+        assertEquals(listOf("notes" to true), api.sent)
+        assertTrue("still awaiting review", !sectionAbsent("Delivered · awaiting review"))
     }
 
     @Test fun englishCopy() {

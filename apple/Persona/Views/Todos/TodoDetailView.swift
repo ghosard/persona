@@ -193,19 +193,35 @@ struct TodoDetailView: View {
                         .focused($titleFocused)
                         .onSubmit { commitTitle() }
 
-                    HStack(spacing: Theme.Space.sm) {
-                        Chip(text: todo.statusLabel(status), look: .tone(todo.shownState(status).todoTone))
-                        Text("·")
-                            .foregroundStyle(.secondary)
-                        Text("\(activeAgents.count) agents")
-                            .font(Theme.Font.caption)
-                            .foregroundStyle(.secondary)
-                        if let d = todo.createdAt {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: Theme.Space.sm) {
+                            Chip(text: todo.statusLabel(status), look: .tone(todo.shownState(status).todoTone))
                             Text("·")
                                 .foregroundStyle(.secondary)
-                            Text("Created \(Fmt.relative(d))")
+                            Text("\(activeAgents.count) agents")
                                 .font(Theme.Font.caption)
                                 .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                            if let d = todo.createdAt {
+                                Text("·")
+                                    .foregroundStyle(.secondary)
+                                Text("Created \(Fmt.relative(d))")
+                                    .font(Theme.Font.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                        .fixedSize()
+                        VStack(alignment: .leading, spacing: Theme.Space.xs) {
+                            Chip(text: todo.statusLabel(status), look: .tone(todo.shownState(status).todoTone))
+                            Text("\(activeAgents.count) agents")
+                                .font(Theme.Font.caption)
+                                .foregroundStyle(.secondary)
+                            if let d = todo.createdAt {
+                                Text("Created \(Fmt.relative(d))")
+                                    .font(Theme.Font.caption)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                     }
 
