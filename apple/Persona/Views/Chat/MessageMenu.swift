@@ -23,8 +23,10 @@ final class MessageMenu {
     /// be selected (the text view over them follows every line). Until then it lays out only the parts near the screen.
     var liftWhole = false
     /// Selecting asked for while that copy lays out all of its parts: `LiftedMessage` starts it once they are there,
-    /// with what showed kept where it was.
-    @ObservationIgnored var pendingSelect: InPlaceSelect?
+    /// with what showed kept where it was. Meanwhile Select Text spins on the bar.
+    var pendingSelect: InPlaceSelect?
+    /// Lays out all of the parts a frame after Select Text spins (#5291).
+    @ObservationIgnored private let frames = LiftFrames()
     /// The message being shared as a card.
     var sharing: ShareMessage?
     /// Forward (#3807): the chat makes the pressed message a forward and opens its picker (`forwarding`). nil: the bar
@@ -97,7 +99,8 @@ final class MessageMenu {
     }
 
     func close() {
-        pendingSelect = nil
+        frames.stop()
+        if pendingSelect != nil { pendingSelect = nil }
         if selected != nil || lift != nil || inPlace != nil || liftWhole {
             withAnimation(Theme.Motion.conceal) {
                 selected = nil
@@ -118,7 +121,11 @@ final class MessageMenu {
         Haptics.tap()
         if lift.part != nil, !liftWhole {
             pendingSelect = InPlaceSelect(at: point)
-            liftWhole = true
+            // Select Text spins first; then the parts are laid out, one a frame (`AnswerPartsLift`).
+            frames.run { [weak self] in
+                if let self, pendingSelect != nil, self.lift != nil { liftWhole = true }
+                return false
+            }
             return
         }
         withAnimation(Theme.Motion.state) { inPlace = InPlaceSelect(at: point) }
@@ -551,7 +558,8 @@ struct MessageActionBar: View {
                 menu.selecting = SelectableText(text: text, plain: isUser, msg: id, quotable: !pending)
             }
             #else
-            action(String(localized: "Select Text [Message Menu 4d8efc]"), Theme.Icon.select, closes: false) {
+            // A long answer lays itself out first (#5291): it spins meanwhile.
+            action(String(localized: "Select Text [Message Menu 4d8efc]"), Theme.Icon.select, closes: false, busy: menu.pendingSelect != nil) {
                 menu.selectInPlace(at: nil)
             }
             #endif
@@ -588,21 +596,25 @@ struct MessageActionBar: View {
         .shadow(color: .black.opacity(0.25), radius: 10, y: 4)
     }
 
-    /// tint: the danger color for Delete; nil, the primary ink.
-    private func action(_ title: String, _ symbol: String, closes: Bool = true, tint: Color? = nil,
+    /// tint: the danger color for Delete; nil, the primary ink. busy: a spinner in its symbol's place.
+    private func action(_ title: String, _ symbol: String, closes: Bool = true, tint: Color? = nil, busy: Bool = false,
                         perform: @escaping () -> Void) -> some View {
         Button {
             perform()
             if closes { menu.close() }
-        } label: { label(title, symbol, tint: tint) }
+        } label: { label(title, symbol, tint: tint, busy: busy) }
         .buttonStyle(.plain)
         .accessibilityLabel(title) // its word only, not the symbol's own name too
     }
 
-    private func label(_ title: String, _ symbol: String, tint: Color?) -> some View {
+    private func label(_ title: String, _ symbol: String, tint: Color?, busy: Bool) -> some View {
         VStack(spacing: Theme.Space.xs) {
             // Symbols differ in height: a fixed box keeps every label on one line.
-            ThemedIcon(symbol).font(Theme.Font.heading).dynamicTypeSize(...DynamicTypeSize.xxLarge).scaledFrame(height: Theme.Size.iconS)
+            if busy {
+                ProgressView().controlSize(.small).scaledFrame(height: Theme.Size.iconS)
+            } else {
+                ThemedIcon(symbol).font(Theme.Font.heading).dynamicTypeSize(...DynamicTypeSize.xxLarge).scaledFrame(height: Theme.Size.iconS)
+            }
             Text(title).font(Theme.Font.label).lineLimit(1).minimumScaleFactor(0.8) // Select Text on a narrow bar
         }
         .foregroundStyle(tint.map { AnyShapeStyle($0) } ?? AnyShapeStyle(HierarchicalShapeStyle.primary))

@@ -102,7 +102,7 @@ private struct SelectableInLift: ViewModifier {
                 if let select, let menu {
                     GeometryReader { geo in
                         LiftTextView(text: source, words: words, select: select, menu: menu, place: place,
-                                     rows: shown.rows, folds: shown.foldSpans, texts: shown.texts)
+                                     rows: shown.rows, folds: shown.foldSpans, texts: shown.texts, tables: shown.tables)
                             .frame(width: geo.size.width, height: geo.size.height)
                     }
                 }
@@ -208,6 +208,8 @@ private struct LiftTextView: UIViewRepresentable {
     var folds: [ClosedRange<CGFloat>]
     /// Where the chat's lines break (`ShownWords.texts`).
     var texts: [WordBreaks]
+    /// Its tables' sizes as drawn (`ShownWords.tables`).
+    var tables: [CGSize]
 
     func makeUIView(context: Context) -> LiftUITextView { LiftUITextView() }
 
@@ -217,7 +219,8 @@ private struct LiftTextView: UIViewRepresentable {
         LiftTrace.note("text view update rows=\(rows.count)")
         #endif
         v.place = place
-        v.show(text, words, design: UIFontDescriptor.SystemDesign(StyleSpec.current.fontDesign)) // the app's, as RootView sets it
+        v.show(text, words, design: UIFontDescriptor.SystemDesign(StyleSpec.current.fontDesign), // the app's, as RootView sets it
+               tables: tables)
         v.snap(to: rows, folds: folds, texts: texts)
         if let bar = menu.lift?.bar,
            let quote = menu.selectionQuote(of: SelectableText(text: bar.text, plain: bar.isUser, msg: bar.id, quotable: !bar.pending)) {
@@ -272,8 +275,13 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
     /// its interaction is not among `interactions`; this one shows the same items.
     private lazy var menuInteraction = UIEditMenuInteraction(delegate: self)
     private var source: (text: String, words: LiftWords)?
+    /// The tables' sizes as the copy draws them (`LiftTables`).
+    private var tables: [CGSize] = []
     /// The width the words were laid out for (a table's picture and columns depend on it).
     private var laidOut: CGFloat = 0
+    /// Its lines are to go on the chat's (`resnap`), once, in its next layout: the words and the chat's lines change
+    /// in the same frame, several times as the copy settles.
+    private var snapPending = false
     private var begun: UUID?
     /// Something is selected: when that goes, the selecting is over.
     private var picked = false
@@ -315,36 +323,39 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
 
     required init?(coder: NSCoder) { fatalError("not from a nib") }
 
-    func show(_ text: String, _ words: LiftWords, design: UIFontDescriptor.SystemDesign = .default) {
-        guard source?.text != text || source?.words != words || self.design != design else { return }
+    func show(_ text: String, _ words: LiftWords, design: UIFontDescriptor.SystemDesign = .default, tables: [CGSize] = []) {
+        let sameTables = tables.count == self.tables.count
+            && !zip(tables, self.tables).contains { abs($0.width - $1.width) > 0.5 || abs($0.height - $1.height) > 0.5 }
+        guard source?.text != text || source?.words != words || self.design != design || !sameTables else { return }
         source = (text, words)
         self.design = design
-        render(width: laidOut)
+        self.tables = tables
+        render(width: laidOut > 0 ? laidOut : wrapWidth)
     }
 
+    /// Laid out once its width is known (the width the words were offered, `place`, or its own).
     private func render(width: CGFloat) {
-        guard let source else { return }
+        guard let source, width > 0 else { return }
         laidOut = width
         textContainer.size = CGSize(width: width, height: .greatestFiniteMagnitude)
         let look = ReplyText.Look(source.words, design: design, traits: traitCollection)
         #if DEBUG
-        let words: NSAttributedString = LiftTrace.time("reply-text \(source.text.count) chars w=\(Int(width))") {
+        let words: NSAttributedString = LiftTrace.time("reply-text \(source.text.count) chars w=\(Int(width)) tables=\(tables.count)") {
             switch source.words {
             case .plain: ReplyText.plain(source.text, look: look)
-            case .reply: ReplyText.attributed(source.text, look: look, width: width)
+            case .reply: ReplyText.attributed(source.text, look: look, width: width, tables: tables)
             }
         }
         let cleared = LiftTrace.time("reply-text clear") { ReplyText.clear(words) }
         LiftTrace.time("text view set text") { attributedText = cleared }
-        LiftTrace.time("resnap (render) rows=\(rows.count)") { resnap() }
         #else
         let words: NSAttributedString = switch source.words {
         case .plain: ReplyText.plain(source.text, look: look)
-        case .reply: ReplyText.attributed(source.text, look: look, width: width)
+        case .reply: ReplyText.attributed(source.text, look: look, width: width, tables: tables)
         }
         attributedText = ReplyText.clear(words)
-        resnap()
         #endif
+        snapSoon()
         #if DEBUG
         setNeedsLayout() // `LiftLines`
         #endif
@@ -360,11 +371,13 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
         self.rows = rows
         self.folds = folds
         self.texts = texts
-        #if DEBUG
-        LiftTrace.time("resnap (snap) rows=\(rows.count)") { resnap() }
-        #else
-        resnap()
-        #endif
+        snapSoon()
+    }
+
+    /// Its lines go on the chat's in its next layout (`snapPending`).
+    private func snapSoon() {
+        snapPending = true
+        setNeedsLayout()
     }
 
     /// Lays the words out breaking where the chat's do (`LiftLayout.follow`), then again with each line on the chat's
@@ -446,6 +459,14 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
     override func layoutSubviews() {
         let w = wrapWidth
         if w > 0, abs(w - laidOut) > 0.5, !picked { render(width: w) }
+        if snapPending {
+            snapPending = false
+            #if DEBUG
+            LiftTrace.time("resnap rows=\(rows.count)") { resnap() }
+            #else
+            resnap()
+            #endif
+        }
         super.layoutSubviews()
         #if DEBUG
         if LiftLines.on { LiftLines.shared.select = LiftLines.lines(of: self, layout: layout) }
@@ -512,12 +533,21 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
                 if tries > 0 { start(at, tries: tries - 1) }
                 return
             }
+            #if DEBUG
+            LiftTrace.time("start: layout") { layoutIfNeeded() }
+            guard let range = at.flatMap(word(at:)) ?? textRange(from: beginningOfDocument, to: endOfDocument) else { return }
+            LiftTrace.time("start: first responder") { _ = becomeFirstResponder() }
+            LiftTrace.time("start: select") { selectedTextRange = range }
+            picked = !range.isEmpty
+            LiftTrace.time("start: menu") { showMenu(for: range) }
+            #else
             layoutIfNeeded()
             guard let range = at.flatMap(word(at:)) ?? textRange(from: beginningOfDocument, to: endOfDocument) else { return }
             _ = becomeFirstResponder()
             selectedTextRange = range
             picked = !range.isEmpty
             showMenu(for: range)
+            #endif
         }
     }
 
@@ -869,7 +899,7 @@ enum ReplyText {
         out.addAttributes([.foregroundColor: UIColor.clear, .underlineColor: UIColor.clear, .strikethroughColor: UIColor.clear], range: all)
         out.enumerateAttribute(.attachment, in: all) { value, _, _ in
             guard let a = value as? NSTextAttachment, a.bounds.width > 0, a.bounds.height > 0 else { return }
-            a.image = UIGraphicsImageRenderer(size: a.bounds.size).image { _ in }
+            a.image = blank // the attachment's bounds keep its room
         }
         return out
     }
@@ -881,12 +911,18 @@ enum ReplyText {
         return NSAttributedString(string: text, attributes: [.font: look.body, .foregroundColor: look.color, .paragraphStyle: style])
     }
 
-    /// A reply laid out for `width` (what a table's picture is drawn at).
-    static func attributed(_ markdown: String, look: Look, width: CGFloat) -> NSAttributedString {
-        let b = Builder(look: look, width: width)
+    /// A reply laid out for `width` (what a table's picture is drawn at). tables: its tables' sizes as the lifted copy
+    /// draws them (`LiftTables`), each left that much room instead of drawn again; when they are not as many as its
+    /// tables, they are drawn again after all.
+    static func attributed(_ markdown: String, look: Look, width: CGFloat, tables: [CGSize]? = nil) -> NSAttributedString {
+        let b = Builder(look: look, width: width, tables: tables)
         b.read(markdown)
+        if let tables, b.tableCount != tables.count { return attributed(markdown, look: look, width: width) }
         return b.finish()
     }
+
+    /// A picture's room in the words that are clear (`clear`): drawn as large as the room, it draws nothing.
+    static let blank = UIGraphicsImageRenderer(size: CGSize(width: 1, height: 1)).image { _ in }
 
     /// The text of a part of the words, a picture in it as what it copies as.
     static func copyText(_ part: NSAttributedString) -> String {
@@ -925,6 +961,10 @@ enum ReplyText {
     private final class Builder {
         let look: Look
         let width: CGFloat
+        /// The tables' sizes as the copy draws them, in order; nil: each drawn again as a picture (`ReplyTable`).
+        let tables: [CGSize]?
+        /// How many tables were read.
+        private(set) var tableCount = 0
         var lines: [Line] = []
         var blocks: [Block] = []
         var open: Open?
@@ -932,9 +972,10 @@ enum ReplyText {
         var levels: [(marker: Int, text: CGFloat)] = []
         var afterBlank = false
 
-        init(look: Look, width: CGFloat) {
+        init(look: Look, width: CGFloat, tables: [CGSize]? = nil) {
             self.look = look
             self.width = width
+            self.tables = tables
         }
 
         private var markerWidth: CGFloat { look.size * 1.5 }
@@ -1139,19 +1180,29 @@ enum ReplyText {
             blocks.append(Block())
             open = nil
             levels = []
-            #if DEBUG
-            let image = LiftTrace.time("table picture \(source.count) chars") { ReplyTable.picture(source, width: width, traits: look.traits) }
-            #else
-            let image = ReplyTable.picture(source, width: width, traits: look.traits)
-            #endif
-            guard let image else {
-                add(verbatim(copied, look.body), in: blocks.count - 1, lineSpacing: true)
-                return
-            }
+            let at = tableCount
+            tableCount += 1
             let a = NSTextAttachment()
-            a.image = image
-            let size = image.size.width > width && width > 0
-                ? CGSize(width: width, height: image.size.height * width / image.size.width) : image.size
+            let drawn: CGSize
+            if let tables, at < tables.count, tables[at].width > 0, tables[at].height > 0 {
+                // Its room only, as large as the copy draws it: the words over it are clear (`ReplyText.clear`).
+                a.image = ReplyText.blank
+                drawn = tables[at]
+            } else {
+                #if DEBUG
+                let image = LiftTrace.time("table picture \(source.count) chars") { ReplyTable.picture(source, width: width, traits: look.traits) }
+                #else
+                let image = ReplyTable.picture(source, width: width, traits: look.traits)
+                #endif
+                guard let image else {
+                    add(verbatim(copied, look.body), in: blocks.count - 1, lineSpacing: true)
+                    return
+                }
+                a.image = image
+                drawn = image.size
+            }
+            let size = drawn.width > width && width > 0
+                ? CGSize(width: width, height: drawn.height * width / drawn.width) : drawn
             a.bounds = CGRect(origin: .zero, size: size)
             let line = NSMutableAttributedString(attachment: a)
             line.addAttributes([.replySource: copied, .font: look.body], range: NSRange(location: 0, length: line.length))

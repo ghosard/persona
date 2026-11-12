@@ -188,3 +188,26 @@ struct MessageLiftTests {
         #expect(out.at.isEmpty)
     }
 }
+
+/// The order a lifted long answer's parts are laid out in to select its words, one a frame (#5291): what shows first
+/// (what the lazy stack has on hand, and the pressed part), then the others nearest the pressed part, those under it
+/// before those above it (which move it).
+@MainActor
+struct LiftPartsTests {
+    private func order(_ rank: [Int]) -> [Int] { rank.indices.sorted { rank[$0] < rank[$1] } }
+
+    @Test func whatShowsComesFirstThenTheNearest() {
+        let parts = LiftParts()
+        parts.near = [4, 5]
+        #expect(order(parts.ranks(8, pressed: 5)) == [4, 5, 6, 7, 3, 2, 1, 0])
+        #expect(parts.first == 2)
+        parts.near = [0]
+        #expect(order(parts.ranks(8, pressed: 5)) == [4, 5, 6, 7, 3, 2, 1, 0], "kept once made")
+    }
+
+    @Test func thePressedPartComesFirstWhenNothingIsOnHand() {
+        let parts = LiftParts()
+        #expect(order(parts.ranks(4, pressed: 2)) == [2, 3, 1, 0])
+        #expect(parts.first == 1)
+    }
+}

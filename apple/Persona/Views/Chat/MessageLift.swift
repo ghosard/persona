@@ -97,6 +97,15 @@ extension View {
 extension EnvironmentValues {
     /// The lifted copy of a message drawn in parts lays out all of its parts (`MessageMenu.liftWhole`).
     @Entry var liftWhole = false
+    /// The lifted copy of a message drawn in parts: how tall its pressed part was in the chat, and the screen
+    /// (`AnswerPartsLift`, its parts not laid out yet).
+    @Entry var liftPartRoom: LiftPartRoom? = nil
+}
+
+/// How tall the pressed part of a message drawn in parts was in the chat, and the screen (`liftPartRoom`).
+struct LiftPartRoom: Equatable {
+    var part: CGFloat
+    var screen: CGFloat
 }
 
 /// Where a pressable part is, written on every scrolled frame without drawing anything again (not observed). Written
@@ -121,6 +130,72 @@ nonisolated final class LiftPlace {
 nonisolated final class LiftScrolled {
     var top: CGFloat = 0
     var window: CGFloat?
+    /// Not being scrolled (`onScrollPhaseChange`).
+    var idle = true
+}
+
+/// Work for a lifted copy one step a frame (a display link's ticks), so that no frame lays out much of it (#5291):
+/// the parts above the pressed one after the first frame, then the parts to select the words one by one. Steps run
+/// on the main thread; held by the view that runs them (`@State`, nothing stored but nil) and stopped when it goes.
+@MainActor final class LiftFrames {
+    #if os(macOS)
+    private var link: Timer?
+    #else
+    private var link: CADisplayLink?
+    #endif
+    private var step: (() -> Bool)?
+    private var skip = 0
+
+    /// `step` on each frame from the one after next (the frame being drawn now and the next one are left as they
+    /// are: what changed before this shows first), until it returns false.
+    func run(_ step: @escaping () -> Bool) {
+        stop()
+        self.step = step
+        skip = 1
+        #if os(macOS)
+        let t = Tick(self)
+        let l = Timer(timeInterval: 1.0 / 60, repeats: true) { timer in MainActor.assumeIsolated { t.fire(timer) } }
+        RunLoop.main.add(l, forMode: .common)
+        #else
+        let l = CADisplayLink(target: Tick(self), selector: #selector(Tick.tick))
+        l.add(to: .main, forMode: .common)
+        #endif
+        link = l
+    }
+
+    func stop() {
+        link?.invalidate()
+        link = nil
+        step = nil
+    }
+
+    fileprivate func tick() {
+        if skip > 0 {
+            skip -= 1
+            return
+        }
+        guard let step else { return stop() }
+        if !step() { stop() }
+    }
+
+    /// The display link's target, which it keeps: the runner is not kept by its own link (a timer's on the Mac).
+    private final class Tick: NSObject {
+        weak var frames: LiftFrames?
+
+        init(_ frames: LiftFrames) { self.frames = frames }
+
+        #if os(macOS)
+        func fire(_ timer: Timer) {
+            guard let frames else { return timer.invalidate() }
+            MainActor.assumeIsolated { frames.tick() }
+        }
+        #else
+        @objc func tick(_ link: CADisplayLink) {
+            guard let frames else { return link.invalidate() }
+            MainActor.assumeIsolated { frames.tick() }
+        }
+        #endif
+    }
 }
 
 /// Lays out its one view as its parent asks, and keeps what that parent offered it (`LiftPlace.offer`), for the same
@@ -160,6 +235,31 @@ extension View {
     /// A block of the words drawn as one picture in the text view over a lifted message (a table): its texts' lines
     /// are not lines of the words (`LiftLayout.snap`).
     func oneBlockInLift() -> some View { modifier(OneBlockInLift()) }
+}
+
+/// The sizes of a lifted copy's tables as it draws them, in order (`ShownWords.tables`): the text view over its words
+/// leaves each that much room, without drawing the table again for it (#5291).
+struct LiftTables: PreferenceKey {
+    static var defaultValue: [CGSize] { [] }
+    static func reduce(value: inout [CGSize], nextValue: () -> [CGSize]) { value += nextValue() }
+}
+
+extension View {
+    /// A table, as large as it is drawn (its columns, not the width it scrolls in): in a lifted copy, its size
+    /// (`LiftTables`).
+    func liftTableSize() -> some View { modifier(LiftTableSize()) }
+}
+
+private struct LiftTableSize: ViewModifier {
+    @Environment(\.liftCopy) private var lifted
+
+    func body(content: Content) -> some View {
+        content.background {
+            if lifted {
+                GeometryReader { g in Color.clear.preference(key: LiftTables.self, value: [g.size]) }
+            }
+        }
+    }
 }
 
 private struct OneBlockInLift: ViewModifier {
@@ -371,6 +471,8 @@ struct ShownWords: PreferenceKey, Equatable {
     var folds: [CGRect] = []
     /// Where each text's lines break, all of them (a folded quote's too), in order (`LiftLayout.follow`).
     var texts: [WordBreaks] = []
+    /// Its tables' sizes as drawn, in order (`LiftTables`).
+    var tables: [CGSize] = []
 
     static var defaultValue: ShownWords { ShownWords() }
     static func reduce(value: inout ShownWords, nextValue: () -> ShownWords) {
@@ -378,6 +480,7 @@ struct ShownWords: PreferenceKey, Equatable {
         value.lines += n.lines
         value.folds += n.folds
         value.texts += n.texts
+        value.tables += n.tables
     }
 
     /// The lines that show: not those of a text in a folded quote past its card's bottom.
@@ -446,6 +549,8 @@ extension View {
                                        value: ShownWords(lines: ShownWords.measure(layouts, geo), texts: ShownWords.breaks(layouts)))
             }
         }
+        .backgroundPreferenceValue(LiftTables.self) { sizes in Color.clear.preference(key: ShownWords.self, value: ShownWords(tables: sizes)) }
+        .transformPreference(LiftTables.self) { $0 = [] }
         .overlayPreferenceValue(ShownWords.self) { shown in read(shown) }
         .transformPreference(ShownWords.self) { $0 = ShownWords() }
     }
@@ -675,6 +780,9 @@ private struct LiftedMessage: View {
                                  bar: CGSize(width: barWidth, height: MessageActionBar.height), bounds: bounds, margin: Theme.Space.s,
                                  gap: Theme.Space.s, trailing: lift.bar.isUser, part: lift.part != nil ? above : nil,
                                  pressInSight: Theme.Size.tapTarget)
+        #if DEBUG
+        let _ = LiftTrace.note("card y=\(Int(p.preview.minY))..\(Int(p.preview.maxY)) offset=\(Int(p.offset)) above=\(Int(above)) height=\(Int(height))")
+        #endif
         ZStack(alignment: .topLeading) {
             #if DEBUG
             if LiftLines.on {
@@ -684,7 +792,7 @@ private struct LiftedMessage: View {
             }
             #endif
             backdrop
-            preview(p, whole: message.height)
+            preview(p, whole: message.height, screen: bounds.height)
                 .frame(width: p.preview.width, height: p.preview.height)
                 .position(x: p.preview.midX, y: p.preview.midY)
             // Out of the way of the edit menu while the words are selected.
@@ -714,7 +822,7 @@ private struct LiftedMessage: View {
             .accessibilityAction { menu.close() }
     }
 
-    @ViewBuilder private func preview(_ p: LiftLayout.Placement, whole: CGFloat) -> some View {
+    @ViewBuilder private func preview(_ p: LiftLayout.Placement, whole: CGFloat, screen: CGFloat) -> some View {
         let cut = p.preview.height < whole - 1
         let shape = RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
         ScrollView(.vertical) {
@@ -724,6 +832,7 @@ private struct LiftedMessage: View {
             }
                 .environment(\.liftSelect, menu.inPlace)
                 .environment(\.liftWhole, menu.liftWhole)
+                .environment(\.liftPartRoom, lift.part != nil ? LiftPartRoom(part: lift.frame.height, screen: screen) : nil)
                 .environment(\.liftCopy, true)
                 .environment(menu)
                 .environment(from: lift.environment) // outside those: they are this copy's own
@@ -743,6 +852,7 @@ private struct LiftedMessage: View {
         // part (`scroll`) and moves once that part is measured (`placing`).
         .defaultScrollAnchor(lift.part != nil ? nil : UnitPoint(x: 0, y: cut ? p.offset / max(whole - p.preview.height, 1) : 0))
         .scrollPosition($scroll)
+        .onScrollPhaseChange { _, phase in scrolled.idle = phase == .idle }
         .coordinateSpace(.named(LiftPressedPart.window))
         .onChange(of: placing && height > 0 ? p.offset : nil) { _, offset in placed(offset) }
         .onScrollGeometryChange(for: Fade.self) { g in
@@ -765,10 +875,11 @@ private struct LiftedMessage: View {
     }
 
     /// The pressed part of a message drawn in parts, measured in the copy. Its first measure places the copy
-    /// (`placing`). The lazy copy keeps what shows itself as it lays out the parts it had guessed (and as the card
-    /// scrolls, where the part shows is kept). Once all of the parts are laid out to select the words, and again when
-    /// MarkdownUI spaces their blocks a pass later, the copy above the pressed part changes: the copy is scrolled for
-    /// that part to show where it did, what showed stays where it was. Selecting asked for meanwhile starts then.
+    /// (`placing`). As the card scrolls, where the part shows is kept. When the copy above the pressed part changes
+    /// while nobody scrolls it (the parts above it come in after the first frame, all of them are laid out to select
+    /// the words, MarkdownUI spaces their blocks a pass later), the copy is scrolled for that part to show where it
+    /// did: what showed stays where it was. While it is scrolled, the lazy stack keeps what shows itself. Selecting
+    /// asked for meanwhile starts once all of the parts are laid out.
     private func measured(_ v: LiftPressedPart.Mark?) {
         guard let v else { return }
         #if DEBUG
@@ -784,7 +895,7 @@ private struct LiftedMessage: View {
             scrolled.top = v.top
             return
         }
-        if v.whole, abs(v.top - scrolled.top) > 0.25, let shown = scrolled.window {
+        if v.whole || scrolled.idle, abs(v.top - scrolled.top) > 0.25, let shown = scrolled.window {
             // The content offset that puts the part `shown` below the card's top: its place in the content (inside
             // the copy's padding) less that.
             scroll.scrollTo(y: pad.top + v.top - shown)
@@ -808,6 +919,7 @@ private struct LiftedMessage: View {
         LiftTrace.note("placed offset=\(Int(offset))")
         #endif
         scroll.scrollTo(y: offset)
+        scrolled.window = pad.top + scrolled.top - offset // where the part shows now, for the parts above to keep it there
         placing = false
     }
 

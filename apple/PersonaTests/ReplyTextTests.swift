@@ -157,6 +157,25 @@ struct ReplyTextTests {
         #expect(try ink(attached) > 200)
     }
 
+    /// Given the sizes the lifted copy draws its tables at, a table is not drawn again: it takes that much room
+    /// (#5291), no wider than the words. Not as many sizes as tables: each is drawn after all.
+    @Test func aTableTakesTheRoomTheCopyDrawsItIn() throws {
+        let md = "看表：\n\n| 页面 | 风险 |\n| --- | --- |\n| 首页 | 低 |\n\n完"
+        func attachment(_ tables: [CGSize]) throws -> NSTextAttachment {
+            let s = ReplyText.attributed(md, look: look, width: 360, tables: tables)
+            #expect(ReplyText.copyText(s) == md)
+            let at = (s.string as NSString).range(of: "\u{FFFC}").location
+            return try #require(s.attribute(.attachment, at: at, effectiveRange: nil) as? NSTextAttachment)
+        }
+        let room = try attachment([CGSize(width: 150, height: 90)])
+        #expect(room.bounds.size == CGSize(width: 150, height: 90))
+        #expect(room.image === ReplyText.blank)
+        #expect(try attachment([CGSize(width: 720, height: 90)]).bounds.size == CGSize(width: 360, height: 45))
+        let drawn = try attachment([CGSize(width: 150, height: 90), CGSize(width: 150, height: 90)])
+        #expect(drawn.image !== ReplyText.blank)
+        #expect(try ink(try #require(drawn.image)) > 200)
+    }
+
     /// Selected to their ends, lines are highlighted across the whole width, a table's and the last line's too (the
     /// system's stopped at the table and at the last word); the end handle stays after the last word; a word inside a
     /// line is highlighted just where it is.
