@@ -31,7 +31,7 @@ Production baseline: `ab972ad09`.
   --tests persona.android.ui.AgentsTabNavigationShotsTest.glassLight
 ```
 
-Before the fix: **8 tests, 7 failures**. The six navigation failures cover task entry, app session link, hub `/s/…` link, notification/request detail, restored chat+terminal stack, and explicit same-tab selection. The Compose failure occurs after clicking the real home control:
+Before the fix: **8 tests, 7 failures**. The six navigation failures cover task entry, app session link, hub `/s/…` link, notification/request detail, restored chat+terminal stack, and an explicit navigator call while Agents is selected. This last case tests the navigator API, not re-tapping the already selected Glass control: its existing menu remains unchanged. The Compose failure occurs after clicking the real home control from Assistant:
 
 ```text
 expected: [AgentsRoute]
@@ -47,5 +47,15 @@ Targeted detail opening passes before the fix and remains covered afterward.
 ```
 
 After the fix: **76 tests, 0 failures, 0 errors, 0 skipped; BUILD SUCCESSFUL**. This includes all seven new navigation tests and twelve Compose scenes (three styles × light/dark × default/large text).
+
+Final integration verification at `2d50e475c` (main `3b4507aea` integrated):
+
+```sh
+./gradlew :app:test :core:navigation:test :app:assembleDebug :app:lintDebug
+```
+
+**App: 283 tests; core navigation: 35 tests; zero failures/errors/skips. BUILD SUCCESSFUL in 8m 27s.** Debug APK and app lint completed. Translation/token/slot guards, all four documentation guards and privacy scanning pass. No Release unit-test report or signed Release APK was produced.
+
+The final PR head `8bbc0fff9` additionally merges main at `cde774ad3`. Its Android tree is byte-identical to the tested `2d50e475c` (`git diff --exit-code 2d50e475c HEAD -- android/` exits 0); doc/privacy checks pass again after keeping the current web rules alongside this Android rule. Screenshots were regenerated from the final integrated build. The six default list images are byte-identical to the earlier artifact the maintainer reviewed.
 
 No APK has been installed on a phone and no production deployment is claimed. The fix needs to be included in a subsequent Android app release to reach installed devices.
