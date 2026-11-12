@@ -11,7 +11,8 @@ import (
 // New Inbox messages about a supervised task reach its supervisor (#4293; docs/assistant/unified-entry.md
 // "Supervision (#3124)" and "Message cards link to tasks"). The AI twin's pass takes new messages from other people into
 // an item, and the judge links the item to one of the user's tasks (linkTaskFor). When that task is supervised, its
-// supervisor gets the signal inbox through the usual digest: routed to the task's leader conversation or the main one,
+// supervisor gets the signal inbox through the usual digest: routed as digestTo routes the task's own signals (the
+// conversation that handed it out; for the main conversation's own, the background supervisor while it is on),
 // gathered, deduplicated and spaced like any other signal, and several messages about one task before the message goes
 // out are one entry, the newest item's, with how many came. Off unless the Inbox's inbox.forward_to_tasks is on
 // (inbox_settings.go): each one is a supervisor turn the user pays for.

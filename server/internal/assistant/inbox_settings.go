@@ -18,9 +18,9 @@ const inboxSettingsKey = "inbox_settings"
 
 // InboxSettings are the Inbox's handling settings, as kept and as GET /api/v1/inbox/settings answers them.
 type InboxSettings struct {
-	// ForwardToTasks: new messages from other people that the AI twin's judge links to a supervised task reach the task's
-	// owner, the conversation supervising it (supervise_inbox.go). Off by default: each one is a turn of that
-	// conversation's model.
+	// ForwardToTasks: new messages from other people that the Inbox links to a supervised task reach the task's owner,
+	// the conversation that follows it up as digestTo routes it (supervise_inbox.go). Off by default: each one is a turn
+	// of that conversation's model.
 	ForwardToTasks bool `json:"forward_to_tasks"`
 }
 

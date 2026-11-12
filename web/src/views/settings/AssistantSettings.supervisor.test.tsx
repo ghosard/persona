@@ -38,7 +38,7 @@ beforeEach(async () => {
   resetManagerChoice(); setRosterDefault("assistant");
   vi.mocked(toast).mockClear();
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
-  stored = { manager: "assistant", notes: "", agent_tasks: false, inbox_signals: false, main_supervises_own_tasks: false, background_supervisor: "bg" }; writes = []; answer = undefined;
+  stored = { manager: "assistant", notes: "", agent_tasks: false, main_supervises_own_tasks: false, background_supervisor: "bg" }; writes = []; answer = undefined;
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input).split("?")[0];
     if (path.endsWith("/assistant")) {

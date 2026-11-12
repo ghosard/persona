@@ -49,7 +49,9 @@ def features():
                 ["preview"] if os.environ.get("MOCK_PREVIEW") else []) + (
                 ["task_cron"] if os.environ.get("MOCK_CRON") == "1" else []) + (
                 [] if os.environ.get("MOCK_TODO_SEEN") == "off" else ["todo_seen"]) + (
-                [] if os.environ.get("MOCK_LOOK_UPLOADS") == "off" else ["look_uploads"])
+                [] if os.environ.get("MOCK_LOOK_UPLOADS") == "off" else ["look_uploads"]) + (
+                # GET/PUT /api/v1/inbox/settings (#4524): the apps' Inbox handling entry. Not with MOCK_LEGACY_HUB.
+                [] if os.environ.get("MOCK_LEGACY_HUB") else ["inbox_settings"])
 
 
 def identity():

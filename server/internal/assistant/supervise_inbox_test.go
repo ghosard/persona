@@ -13,8 +13,8 @@ import (
 
 // New Inbox messages about a supervised task reach its supervisor (#4293, supervise_inbox.go).
 
-// turnInboxSignalsOn turns inbox.forward_to_tasks on.
-func turnInboxSignalsOn(t *testing.T, s *Service) {
+// turnForwardOn turns inbox.forward_to_tasks on.
+func turnForwardOn(t *testing.T, s *Service) {
 	t.Helper()
 	setForward(t, s, true)
 }
@@ -73,7 +73,7 @@ func pendingInbox(s *Service, todo string) (superviseSignal, bool) {
 // it) and says how many came; the same message taken again is not told again.
 func TestInboxSignalOnLink(t *testing.T) {
 	s, f := newQuietService(t)
-	turnInboxSignalsOn(t, s)
+	turnForwardOn(t, s)
 	todo := supervisedTodo(t, s, "修登录崩溃")
 	it := linkedItem(s, "lark:f1:12", todo.ID, "12", "登录那个崩溃今天能修好吗？\n下午要发版", 2)
 	s.superviseInbox(context.Background(), []*InboxItem{it}, map[*InboxItem]bool{it: true})
@@ -107,7 +107,7 @@ func TestInboxSignalOnLink(t *testing.T) {
 func TestInboxSignalsCollapse(t *testing.T) {
 	s, f := newQuietService(t)
 	s.superviseTimes.gather = time.Second // all three come before it goes
-	turnInboxSignalsOn(t, s)
+	turnForwardOn(t, s)
 	todo := supervisedTodo(t, s, "修登录崩溃")
 	ctx := context.Background()
 	a := linkedItem(s, "lark:f1:12", todo.ID, "12", "今天能修好吗？", 1)
@@ -157,7 +157,7 @@ func TestInboxSignalsLeftOut(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			s, f := newQuietService(t)
-			turnInboxSignalsOn(t, s)
+			turnForwardOn(t, s)
 			todo := supervisedTodo(t, s, "修登录崩溃")
 			it := linkedItem(s, "lark:f1:12", todo.ID, "12", "今天能修好吗？", 1)
 			c.set(t, s, &todo, it)
@@ -178,7 +178,7 @@ func TestInboxSignalDroppedMeanwhile(t *testing.T) {
 	ctx := context.Background()
 	s, _ := newQuietService(t)
 	s.superviseTimes.gather = time.Hour // the message does not go out during the test
-	turnInboxSignalsOn(t, s)
+	turnForwardOn(t, s)
 	todo := supervisedTodo(t, s, "修登录崩溃")
 	it := linkedItem(s, "lark:f1:12", todo.ID, "12", "今天能修好吗？", 1)
 	s.superviseInbox(ctx, []*InboxItem{it}, map[*InboxItem]bool{it: true})
@@ -193,7 +193,7 @@ func TestInboxSignalDroppedMeanwhile(t *testing.T) {
 	if _, ok := s.digestEntry(ctx, g, ""); ok {
 		t.Fatal("told after the switch went off")
 	}
-	turnInboxSignalsOn(t, s)
+	turnForwardOn(t, s)
 	if _, _, err := s.updateSupervision(ctx, todo.ID, func(v *Supervision) bool { v.State = reviewNeedsUser; return true }); err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +216,7 @@ func TestInboxSignalFromTheTwinsPass(t *testing.T) {
 				t.Fatal(err)
 			}
 			if on {
-				turnInboxSignalsOn(t, s)
+				turnForwardOn(t, s)
 			}
 			todo := supervisedTodo(t, s, "修登录崩溃")
 			h.setConfig(func(c *assistantwire.InboxConfig) { c.Agent.Enabled = true })

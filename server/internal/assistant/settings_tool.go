@@ -159,12 +159,15 @@ func (s *Service) ownSettings() []ownSetting {
 			get: func(ctx context.Context) (string, error) { return fmt.Sprint(s.agentTasks(ctx)), nil },
 			set: s.setAgentTasks},
 		{Setting: Setting{Key: "inbox.forward_to_tasks", Title: "Forward related messages to their task", Actions: getSet,
-			About: "off (the default): an Inbox message the AI twin's judge links to a running task only reaches the twin's handling " +
-				"chat (and a message card once it drafts a reply). on: new messages from other people linked to a supervised task also " +
-				"reach the task's owner, the conversation supervising it (its leader conversation, else the main conversation), as an " +
-				"inbox entry of its next supervision message, several collapsed into one per task with their count. Needs the Inbox AI " +
-				"twin, which makes the link; Persona's own sends, bot chats and tasks waiting for the user's decision never raise one. " +
-				"Spends the owner's model turns. Inbox › ⋯ › Inbox handling in the apps; applies from the next new message",
+			About: "off (the default): an Inbox message linked to a running task stays with the Inbox (and the AI twin's handling " +
+				"chat, with a message card once it drafts a reply). on: new messages from other people linked to a supervised task " +
+				"also reach the task's owner, the conversation that follows it up, as an inbox entry of its next supervision message, " +
+				"several collapsed into one per task with their count. The owner is the conversation that handed the task out (a " +
+				"leader or another side conversation); for the main conversation's own tasks it is the background supervisor, or the " +
+				"main conversation while assistant.main_supervises_own_tasks is on or before the background supervisor exists. Only " +
+				"messages the Inbox has linked to a task count, and the Inbox AI twin makes most of those links. Persona's own sends, " +
+				"bot chats, tasks waiting for the user's decision and a task leader's workers never raise one. Spends the owner's " +
+				"model turns. Inbox › ⋯ › Inbox handling in the apps; applies from the next new message",
 			Value: "true or false"},
 			get: s.getInboxForward,
 			set: s.setInboxForward},

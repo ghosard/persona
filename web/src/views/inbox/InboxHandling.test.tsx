@@ -59,7 +59,8 @@ it("shows the hub's value, off by default, with what it does", async () => {
   await open();
   expect(toggle().getAttribute("aria-checked")).toBe("false");
   expect(document.body.textContent).toContain("Inbox handling");
-  expect(document.body.textContent).toContain("tell that task's owner");
+  expect(document.body.textContent).toContain("tell the chat that follows that task up");
+  expect(document.body.textContent).toContain("the background supervisor by default");
 });
 
 it("saves the switch and closes", async () => {
