@@ -20,15 +20,18 @@ work. An agent writing "done" in its reply does not finish anything; its turn en
 
 ## Sections
 
+In the page's order (#5707): what the owner has to act on first, then the unfinished work, then what was delivered,
+then the folded ones, Done and Cancelled last. The same order decides which member leads a merged row ("Related to-dos").
+
 | Section | Shown | What it holds |
 | :--- | :--- | :--- |
 | Waiting for you | open | Something only the owner can move: an answer, an approval, a decision, a retry |
 | Working | open | An agent is running on it now |
-| Delivered · awaiting review | open | Worth a look: an unaccepted delivery, unseen turn, pending review or done / please-verify ask. An unaccepted `live` delivery stays here and open indefinitely; it never ages into Done or Shelved |
 | PR to merge | open | Its work stopped at a pull request that is still open and nothing runs: however old, it stays here, with the PR link and how long since it moved |
-| Other open | folded | Open, recently active, none of the above (an agent stopped and seen, a reminder of the user's own) |
+| Other open | open | Open, recently active, none of the above (an agent stopped and seen, a reminder of the user's own) |
+| Delivered · awaiting review | open | Worth a look: an unaccepted delivery, unseen turn, pending review or done / please-verify ask. An unaccepted `live` delivery stays here and open indefinitely; it never ages into Done or Shelved. Supervised delivery stays here even after being seen |
 | Shelved | folded | No activity for 48 hours and nothing running (see "Shelving") |
-| Done | folded | Non-cancelled closed or accepted work, however recently it closed |
+| Done | folded | Non-cancelled closed or accepted work, however recently it closed; an ordinary unsupervised finished turn seen since it last moved |
 | Cancelled | folded | Cancelled work, with its cancellation reason; never counted as Done |
 
 ## Decision table
@@ -46,8 +49,9 @@ The first rule that holds wins.
 | 5 | `closed` | `done_at` is set | Done; explicit completion is never awaiting review |
 | 6 | `accepted` | The latest review accepted it and no review came since, even when the hub reopened it (see "Accepted tasks") | Done; acceptance is never awaiting review |
 | 7 | `finished_unseen` | `delivery.state` is `live`, but the task has not been accepted | Delivered · awaiting review, open until main-chat acceptance or explicit user completion; no 24-hour or 48-hour timeout |
-| 8 | `finished_unseen` | An agent finished a turn nobody has seen, the review is pending, or its ask says done / please verify | Delivered · awaiting review |
+| 8 | `finished_unseen` | An agent finished a turn nobody has seen, the review is pending, or its ask says done / please verify; either not seen or acceptance is still required | Delivered · awaiting review |
 | 9 | `pr_open` | Its PR is open (rule "PR / delivery" above); a `pr_url` whose stage is Merge or later is a merged PR, never this (#3205) | PR to merge |
+| 9a | `seen` | Rule 8's signals, seen by the owner since it last moved (see "Seen"), with no supervisor and no pending acceptance; an open PR takes precedence | Done |
 | 10 | `stale` | Shelvable (see "Shelving") and no activity for 48 hours | Shelved |
 | 11 | `rest` | Anything else | Other open |
 
@@ -133,6 +137,34 @@ Once deployed (checked as above), a task's "Please verify" is accepted by the su
 (`by_assistant` on the ask, stage Verified, no Lark card): the owner is not asked for each one. Only a big feature, a
 to-do with priority `high`, still asks the owner with the card, as before.
 
+## Seen
+
+Seen (#5707) files an ordinary finished turn that has no supervising assistant and needs no acceptance. It is a reading
+receipt, not delivery acceptance:
+
+- **Got it** on a Delivered · awaiting review row (a button under its words, and on iOS a leading swipe action) marks it seen.
+  An ordinary unsupervised finished turn goes to Done at once, before the hub answers; a toast says so with **Undo**, which
+  takes the mark off. A failed write puts the row back and says why. A supervised task or unaccepted delivery records the
+  same receipt but stays in Delivered · awaiting review and open until main-chat acceptance or explicit completion.
+- **Opening it** counts too: the iPhone and Android mark it seen when its page opens; the web when the page leaves it
+  (another to-do, the list, another page), so its row does not move while it is read. Nothing is said about it. The Mac
+  (frozen) does neither and files what another device marked.
+- The mark is the to-do's `seen_at` on the hub (`PUT` / `DELETE /api/v1/todos/{id}/seen`, feature `todo_seen`), so every
+  device agrees. It is not activity: `updated_at` stays, so it neither shelves nor unshelves anything. A client of a hub
+  without `todo_seen` offers neither.
+- For rule 8, a to-do is **seen** when `seen_at` is at or after its last activity. Anything that happens after the mark (a
+  reopen, a new turn, a review) clears that relationship for the new activity. Seen never overrides explicit closure or
+  acceptance, and never closes a task itself.
+- An ordinary finished turn seen (rule 9a) is filed under Done even though the to-do is not closed: the owner has looked,
+  and it no longer counts as open. A PR still waiting on the owner keeps it in PR to merge. A supervised task, pending
+  review or unaccepted `live` delivery stays open and awaiting review.
+- Checks: the shared cases (`*_seen*`, `supervised_finished_unseen_seen_stays_awaiting_review`,
+  `unfinished_before_just_finished_and_seen_in_done`), `server/internal/assistant/todo_seen_test.go`,
+  `web/src/views/Todos.seen.test.tsx`, `apple/PersonaTests/TodoTriageTests.swift` and `TodosLogicTests.swift`. In a
+  browser and the simulator against the mock hub (`MOCK_TODO_LIST=1`; `MOCK_TODO_SEEN=off` is a hub without it):
+  `node web/e2e/todo-seen.mjs <web URL> [--phase before|after] [--shots <dir>]` and the UI test `TodoSeenTests`
+  (`TEST_RUNNER_PERSONA_TODOS_HUB`, `TEST_RUNNER_PERSONA_SHOTS`).
+
 ## Header count
 
 The web's header reads "N open · N shelved · N done · N cancelled" beside the title on wider screens (a phone leaves it out); it counts what the list's filter shows, whatever is searched (#3740). The iOS and
@@ -140,9 +172,10 @@ Android lists have no such line (#3712): it said again what the sections say, so
 to-dos its rows list (a merged row's related ones too), in the section's state color, and the counts follow a search and the
 list's filter (#3740). **Open** counts to-dos that are not closed, not accepted and not shelved: Waiting for you, Working,
 PR to merge, Other open, and every unaccepted Delivered · awaiting review row, including `live` (a finished turn or delivery
-is not acceptance; only a review or the user closes it). **Done** counts non-cancelled closed and accepted ones; **Cancelled**
-is a separate count. The sidebar's To-dos badge shows the same open count without quiet tasks (#1731), as before; the page
-lists and counts them. A task whose agent never started (rule 1) counts as open while it waits on the owner.
+is not acceptance; only a review or the user closes it). An ordinary unsupervised finished turn files under Done once seen.
+**Done** counts non-cancelled closed and accepted ones plus those seen ordinary turns; **Cancelled** is a separate count.
+The sidebar's To-dos badge shows the same open count without quiet tasks (#1731), as before; the page lists and counts them.
+A task whose agent never started (rule 1) counts as open while it waits on the owner.
 
 ## Shelving
 

@@ -18,7 +18,8 @@ import (
 // second definition: it reads the to-dos and sessions as the apps get them (GET /api/v1/todos, the decorated session
 // lists) and passes the clients' shared cases (spec/fixtures/triage, todo_triage_test.go).
 
-// The SOP's sections, in the page's order.
+// The SOP's sections, in the page's order: what the owner has to act on, the unfinished work, what just finished, then
+// the folded ones, Done last (#5707).
 const (
 	triageWaiting   = "waiting"
 	triageWorking   = "working"
@@ -30,7 +31,7 @@ const (
 	triageCancelled = "cancelled"
 )
 
-var triageSections = []string{triageWaiting, triageWorking, triageJustDone, triagePR, triageOther, triageShelved, triageDone, triageCancelled}
+var triageSections = []string{triageWaiting, triageWorking, triagePR, triageOther, triageJustDone, triageShelved, triageDone, triageCancelled}
 
 // The SOP's rules, by name.
 const (
@@ -44,6 +45,7 @@ const (
 	ruleAccepted       = "accepted"
 	ruleDeployed       = "deployed"
 	ruleFinishedUnseen = "finished_unseen"
+	ruleSeen           = "seen"
 	rulePROpen         = "pr_open"
 	ruleStale          = "stale"
 	ruleRest           = "rest"
@@ -323,17 +325,23 @@ func triageShelvable(t Todo, now time.Time, loc *time.Location) bool {
 	return len(triageAgents(t)) > 0 || t.Origin != ""
 }
 
-// triageTodo places one to-do by the SOP's decision table, first match wins (docs/assistant/todo-status-sop.md).
+// triageTodo places one to-do by the SOP's decision table, first match wins (docs/assistant/todo-status-sop.md). Seen
+// can file an unsupervised finished turn (#5707); a supervised or unaccepted delivery stays awaiting review (#5732).
 // restoredAt is a restore from Shelved (zero on the hub: restores are kept on each device); loc is the user's zone, for
 // a due day; superseded: a failed start whose row's work really finished (triageSupersededFailedStarts, #3713).
 func triageTodo(t listedTodo, look triageLookup, now, restoredAt time.Time, loc *time.Location, superseded bool) todoTriage {
 	last := triageLastActivity(t, look, restoredAt)
 	status := triageStatus(t.Todo, look, now)
+	// Seen files an unsupervised finished turn (#5707), never a task that still needs its supervisor's acceptance (#5732).
+	seen := func(at time.Time) bool { return t.SeenAt != nil && !t.SeenAt.Before(at) }
 	ask := triageOpenAsk(t.Ask)
 	at := func(section, rule string) todoTriage { return todoTriage{Section: section, Rule: rule, Last: last} }
 	review := triageReviewState(t.Todo)
 	// An open concern closes only with the secretary's report: nothing else files it with the finished ones.
 	concern := t.Kind == db.KindConcern && t.DoneAt == nil
+	// rule 8's signals: a turn nobody has seen, a review not done yet, an ask that says done / please verify
+	finished := status == "unread" || review == reviewPending || ask != nil && (ask.Outcome == "" || ask.Outcome == outcomeDone)
+	acceptanceRequired := review == reviewPending || t.Supervision != nil && t.Supervision.Supervisor != ""
 
 	switch {
 	case t.Cancelled():
@@ -363,10 +371,12 @@ func triageTodo(t listedTodo, look triageLookup, now, restoredAt time.Time, loc 
 	case !concern && t.Delivery != nil && t.Delivery.State == deliveryLive:
 		// Live is delivery, not acceptance. Until a review or the owner closes it, it stays open and awaiting review (#5732).
 		return at(triageJustDone, ruleFinishedUnseen)
-	case status == "unread" || review == reviewPending || ask != nil && (ask.Outcome == "" || ask.Outcome == outcomeDone):
+	case finished && (!seen(last) || acceptanceRequired):
 		return at(triageJustDone, ruleFinishedUnseen)
 	case triageOpenPR(t.Todo):
 		return at(triagePR, rulePROpen)
+	case finished && !concern: // seen since it last moved, and no PR waits on the owner (a concern is never Done open)
+		return at(triageDone, ruleSeen)
 	case triageShelvable(t.Todo, now, loc) && now.Sub(last) >= triageShelveAfter:
 		return at(triageShelved, ruleStale)
 	}

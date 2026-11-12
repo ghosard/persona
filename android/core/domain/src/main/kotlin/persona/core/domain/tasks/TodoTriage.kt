@@ -13,15 +13,17 @@ import persona.core.contracts.parseTime
 // last moved — never from what an agent says about itself. A port of the web's `web/src/lib/todo-triage.ts`; the rules are
 // the SOP's table, in its order, and the first that holds wins. A change to the rules changes every client.
 
-/** Where a to-do shows, in the page's order. The first four are open sections; the last three start folded. */
-enum class TriageSection { Waiting, Working, JustDone, Pr, Other, Shelved, Done, Cancelled;
+/**
+ * Where a to-do shows, in the page's order (#5707), with cancelled separate from Done (#5732).
+ */
+enum class TriageSection { Waiting, Working, Pr, Other, JustDone, Shelved, Done, Cancelled;
 
-    /** Starts folded. */
-    val folded: Boolean get() = this == Other || this == Shelved || this == Done || this == Cancelled
+    /** Starts folded: Shelved, Done and Cancelled; unfinished to-dos stay open. */
+    val folded: Boolean get() = this == Shelved || this == Done || this == Cancelled
 }
 
 /** Which SOP rule placed a to-do; the section follows from it. */
-enum class TriageRule { FailedStart, Cancelled, Superseded, AgentAsks, OwnerDecides, AgentRunning, Closed, Accepted, Deployed, FinishedUnseen, PrOpen, Stale, Rest }
+enum class TriageRule { FailedStart, Cancelled, Superseded, AgentAsks, OwnerDecides, AgentRunning, Closed, Accepted, Deployed, FinishedUnseen, PrOpen, Seen, Stale, Rest }
 
 /** A to-do's section, the rule that placed it, and the last moment anything of it moved (ms, 0 when nothing says). */
 data class Triage(val section: TriageSection, val rule: TriageRule, val last: Long)
@@ -126,6 +128,7 @@ private fun Todo.shelvable(now: Long, zone: ZoneId): Boolean {
  *  7. Deployed       its delivery is live, not accepted                 → Delivered · awaiting review
  *  8. FinishedUnseen an agent finished unseen, awaits review, or a done ask → Delivered · awaiting review
  *  9. PrOpen         its PR is open, nothing running                    → PR to merge (however old)
+ *  9a. Seen          rule 8 without supervision, seen since it last moved, no PR open → Done
  * 10. Stale          a task with no activity for 48 h                   → Shelved
  * 11. Rest           anything else                                      → Other open
  */
@@ -137,7 +140,10 @@ fun Todo.triage(
     superseded: Boolean = false,
 ): Triage {
     val last = lastActivity(lookup, restoredAt)
-    val status = triageStatus(lookup, now)
+    val status = triageStatus(lookup)
+    // Seen files an unsupervised finished turn (#5707), never a task that still needs acceptance (#5732).
+    val seenMs = ms(this.seenAt)
+    fun seen(at: Long) = seenMs > 0 && seenMs >= at
     val ask = openAsk
     fun at(section: TriageSection, rule: TriageRule) = Triage(section, rule, last)
     val review = reviewState
@@ -155,17 +161,19 @@ fun Todo.triage(
     if (acceptanceStands) return at(TriageSection.Done, TriageRule.Accepted)
     // Live is delivery, not acceptance: an unreviewed live task stays open and awaiting review, however old (#5732).
     if (delivery?.state == "live") return at(TriageSection.JustDone, TriageRule.FinishedUnseen)
-    if (status == TriageStatus.Unread || review == "pending_review" || (ask != null && ask.outcome.isNullOrEmpty()) || ask?.outcome == "done") {
-        return at(TriageSection.JustDone, TriageRule.FinishedUnseen)
-    }
+    val finished = status == TriageStatus.Unread || review == "pending_review" || (ask != null && ask.outcome.isNullOrEmpty()) || ask?.outcome == "done"
+    val acceptanceRequired = review == "pending_review" || !supervision?.supervisor.isNullOrEmpty()
+    if (finished && (!seen(last) || acceptanceRequired)) return at(TriageSection.JustDone, TriageRule.FinishedUnseen)
     if (hasOpenPR) return at(TriageSection.Pr, TriageRule.PrOpen)
+    // seen since it last moved, and no PR waits on the owner
+    if (finished) return at(TriageSection.Done, TriageRule.Seen)
     if (shelvable(now, zone) && now - last >= SHELVE_AFTER_MS) return at(TriageSection.Shelved, TriageRule.Stale)
     return at(TriageSection.Other, TriageRule.Rest)
 }
 
 /**
- * Whether a to-do counts toward the header's open count: not closed, accepted or shelved. A delivered turn nobody
- * accepted still counts, however old: only a review or the user closes a to-do.
+ * Whether a to-do counts toward the header's open count: not closed, accepted or shelved. An unaccepted delivery
+ * still counts after being seen; only an unsupervised finished turn can be filed by Seen (#5707, #5732).
  */
 fun Todo.countsAsOpen(t: Triage): Boolean {
     // a failed start has done_at too (the hub ends it), yet while it waits on the owner it is theirs to retry: open

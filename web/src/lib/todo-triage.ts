@@ -6,13 +6,13 @@ import { acceptanceStands, latestReview, reviewState } from "./supervision";
 import { isCancelled, openAsk, todoDueBy, todoStatus, type SessionLookup, type Todo, type TodoStatus } from "./todos";
 import { todoStageIndex } from "./todo-stage";
 
-/** Where a to-do shows, in the page's order. The first four are open sections; the last three start folded. */
+/** Where a to-do shows, in the page's order (#5707), with cancelled separate from Done (#5732). */
 export type TriageSection = "waiting" | "working" | "just_done" | "pr" | "other" | "shelved" | "done" | "cancelled";
 
-export const TRIAGE_SECTIONS: readonly TriageSection[] = ["waiting", "working", "just_done", "pr", "other", "shelved", "done", "cancelled"];
+export const TRIAGE_SECTIONS: readonly TriageSection[] = ["waiting", "working", "pr", "other", "just_done", "shelved", "done", "cancelled"];
 
-/** Sections that start folded. */
-export const FOLDED_SECTIONS: ReadonlySet<TriageSection> = new Set(["other", "shelved", "done", "cancelled"]);
+/** Sections that start folded: unfinished to-dos stay open (#5707); cancelled folds apart from Done (#5732). */
+export const FOLDED_SECTIONS: ReadonlySet<TriageSection> = new Set(["shelved", "done", "cancelled"]);
 
 /** No activity for this long, nothing of it running: shelved (SOP rule 11). */
 export const SHELVE_AFTER_MS = 48 * 3600_000;
@@ -29,6 +29,7 @@ export type TriageRule =
   | "accepted"
   | "deployed"
   | "finished_unseen"
+  | "seen"
   | "pr_open"
   | "stale"
   | "rest";
@@ -99,12 +100,19 @@ function shelvable(todo: Todo, now: number): boolean {
  *  7. deployed        its delivery is live, not accepted                → Delivered · awaiting review
  *  8. finished_unseen an agent finished unseen, awaits review, or a done ask → Delivered · awaiting review
  *  9. pr_open         its PR is open, nothing running                   → PR to merge (however old)
+ *  9a. seen           rule 8 without supervision, seen since it last moved, no PR open → Done
+ *
+ * Seen (#5707) files only an unsupervised finished turn. A supervised task or an unaccepted live delivery remains
+ * awaiting review even after the owner opens it (#5732).
  * 10. stale           a task with no activity for 48 h                  → Shelved
  * 11. rest            anything else                                     → Other open
  */
 export function triage(todo: Todo, lookup: SessionLookup | undefined, now: number, restoredAt = 0, superseded = false): Triage {
   const last = lastActivity(todo, lookup, restoredAt);
   const status: TodoStatus = todoStatus(todo, lookup);
+  // Seen files an unsupervised finished turn (#5707), never a task that still needs acceptance (#5732).
+  const seenAt = ms(todo.seen_at);
+  const seen = (at: number) => seenAt > 0 && seenAt >= at;
   const ask = openAsk(todo);
   const at = (section: TriageSection, rule: TriageRule): Triage => ({ section, rule, last });
 
@@ -121,14 +129,18 @@ export function triage(todo: Todo, lookup: SessionLookup | undefined, now: numbe
   if (acceptanceStands(todo)) return at("done", "accepted");
   // Live is delivery, not acceptance: an unreviewed live task stays open and awaiting review, however old (#5732).
   if (todo.delivery?.state === "live") return at("just_done", "finished_unseen");
-  if (status === "unread" || reviewState(todo) === "pending_review" || (ask && !ask.outcome) || ask?.outcome === "done") return at("just_done", "finished_unseen");
+  const finished = status === "unread" || reviewState(todo) === "pending_review" || (ask && !ask.outcome) || ask?.outcome === "done";
+  const acceptanceRequired = reviewState(todo) === "pending_review" || Boolean(todo.supervision?.supervisor);
+  if (finished && (!seen(last) || acceptanceRequired)) return at("just_done", "finished_unseen");
   if (openPR(todo)) return at("pr", "pr_open");
+  // seen since it last moved, and no PR waits on the owner
+  if (finished) return at("done", "seen");
   if (shelvable(todo, now) && now - last >= SHELVE_AFTER_MS) return at("shelved", "stale");
   return at("other", "rest");
 }
 
-/** Whether a to-do counts toward the header's open count: not closed, accepted or shelved. A delivered turn nobody
- *  accepted still counts, however old: only a review or the user closes a to-do. */
+/** Whether a to-do counts toward the header's open count: not closed, accepted or shelved. An unaccepted delivery
+ *  still counts after being seen; only an unsupervised finished turn can be filed by Seen (#5707, #5732). */
 export function countsAsOpen(todo: Todo, t: Triage): boolean {
   // a failed start has done_at too (the hub ends it), yet while it waits on the owner it is theirs to retry: open
   if (t.rule === "failed_start") return t.section === "waiting";

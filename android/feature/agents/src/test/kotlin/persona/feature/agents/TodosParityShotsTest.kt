@@ -119,7 +119,6 @@ class TodosParityShotsTest {
             }
         }
         rule.waitForIdle()
-        if (scene == "list") { rule.onNodeWithText("其他未完成").performClick(); rule.waitForIdle() }
         if (scene == "cancelled-list") { rule.onNodeWithText("已取消").performClick(); rule.waitForIdle() }
         if (scene == "picker") { rule.onNodeWithText("新建待办…").performClick(); rule.waitForIdle() }
         assertTrue("$scene: no 「$expected」", rule.onAllNodesWithText(expected, substring = true, useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty())

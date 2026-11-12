@@ -94,6 +94,7 @@ class TodoTriageFixtureTest(private val name: String, private val fixture: Fixtu
         TriageRule.Deployed -> "deployed"
         TriageRule.FinishedUnseen -> "finished_unseen"
         TriageRule.PrOpen -> "pr_open"
+        TriageRule.Seen -> "seen"
         TriageRule.Stale -> "stale"
         TriageRule.Rest -> "rest"
         TriageRule.Cancelled -> "cancelled"
