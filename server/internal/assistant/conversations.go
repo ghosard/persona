@@ -182,6 +182,7 @@ func (s *Service) archiveRoutes() {
 }
 
 var sessionIDRe = lazyre.New(`^[A-Za-z0-9._-]{1,128}$`)
+var legacyTodoIDRe = lazyre.New(`todo_[A-Za-z0-9]+`)
 
 func validSessionID(id string) bool { return sessionIDRe.MatchString(id) }
 
@@ -224,6 +225,9 @@ type relayHop struct {
 type relayState struct {
 	Queue map[string][]relayMsg `json:"queue,omitempty"` // by receiver
 	Hops  map[string]relayHop   `json:"hops,omitempty"`  // by conversation: the hop of the message it is working on
+	// LegacyBackground: conversation + "\x00" + todo whose pre-#5732 supervision notice really reached that conversation.
+	// It survives a manager restart, so an old background can finish exactly those tasks and no new main-supervised ones.
+	LegacyBackground map[string]bool `json:"legacy_background,omitempty"`
 	// Spawned: the conversations conversation_new opened, by id, until they report back or their parent is told
 	// (spawned.go, #4669).
 	Spawned map[string]spawnedConv `json:"spawned,omitempty"`
@@ -261,6 +265,28 @@ func (s *Service) relayLocked(ctx context.Context) bool {
 	}
 	if rs.Spawned == nil {
 		rs.Spawned = map[string]spawnedConv{}
+	}
+	if rs.LegacyBackground == nil {
+		rs.LegacyBackground = map[string]bool{}
+	}
+	// Upgrade an old queue in place: structured signals are exact; a pre-signals message still carries its todo ids.
+	for conversation, queue := range rs.Queue {
+		for _, msg := range queue {
+			if msg.Tool != superviseTool {
+				continue
+			}
+			if msg.Signals != nil {
+				for _, g := range *msg.Signals {
+					if g.Todo != "" {
+						rs.LegacyBackground[conversation+"\x00"+g.Todo] = true
+					}
+				}
+			} else {
+				for _, id := range legacyTodoIDRe.FindAllString(msg.Text, -1) {
+					rs.LegacyBackground[conversation+"\x00"+id] = true
+				}
+			}
+		}
 	}
 	b.st, b.loaded = rs, true
 	b.sent, b.draining, b.holds = map[[2]string][]time.Time{}, map[string]bool{}, map[string]*time.Timer{}

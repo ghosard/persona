@@ -760,9 +760,9 @@ func (s *Service) mayReviewForLeader(ctx context.Context, self string, t Todo) b
 	if up == "" {
 		return false
 	}
-	// The background supervisor stands in for the main conversation above a task leader no leader conversation
-	// supervises: the leader's decisions come to it (digestTo).
-	return up == self || s.isBackground(ctx, self) && !s.isLeader(ctx, up)
+	// The background supervisor stands in for main only when this worker really had a legacy notice for it. Being
+	// configured as background never grants acceptance over a new task-leader worker (#5732).
+	return up == self || s.isBackground(ctx, self) && !s.isLeader(ctx, up) && s.legacyBackgroundNotice(ctx, self, t.ID)
 }
 
 // leaderTaskOf is the open task leader agent lead leads.

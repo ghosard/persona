@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nwverse/persona/server/internal/db"
 	"github.com/nwverse/persona/server/internal/prompts"
 	"github.com/nwverse/persona/server/internal/proto"
 )
@@ -18,7 +19,12 @@ import (
 // the background supervisor's is not the agent's.
 func newBackgroundService(t *testing.T) (*Service, *fakeHub, Todo) {
 	t.Helper()
-	s, f, todo := newSupervisedService(t)
+	return newBackgroundServiceOn(t, nil)
+}
+
+func newBackgroundServiceOn(t *testing.T, st Store) (*Service, *fakeHub, Todo) {
+	t.Helper()
+	s, f, todo := newSupervisedServiceOn(t, st)
 	s.noBackground = false
 	f.mu.Lock()
 	f.made = 100
@@ -160,6 +166,87 @@ func TestBackgroundReviewIsLimitedToLegacyNotices(t *testing.T) {
 		t.Fatalf("the legacy task did not close: %+v", got)
 	}
 	settleService(t, s)
+}
+
+func TestLegacyBackgroundNoticeSurvivesRestart(t *testing.T) {
+	st := planUpdateStore{&planMemStore{memStore: &memStore{}, plans: map[string]db.TaskPlanRow{}}}
+	s, f, todo := newBackgroundServiceOn(t, st)
+	f.known["bg1"] = true
+	f.setSessions("server",
+		proto.Session{SessionID: "conv1", MachineID: "server", Assistant: true, Status: proto.StatusIdle},
+		proto.Session{SessionID: "bg1", MachineID: "server", Assistant: true, Status: proto.StatusIdle})
+	setSettings(t, s, func(v *Settings) { v.BackgroundSupervisor, v.BackgroundSupervisorMachineID = "bg1", "server" })
+	tellLegacyBackground(t, s, f, todo.ID, "bg1")
+	s.relays.mu.Lock()
+	persisted := s.relays.st.LegacyBackground["bg1\x00"+todo.ID]
+	s.relays.mu.Unlock()
+	if !persisted {
+		t.Fatal("the delivered legacy notice was not persisted")
+	}
+	var stored relayState
+	if ok, err := s.store().Setting(context.Background(), relayKey, &stored); err != nil || !ok || !stored.LegacyBackground["bg1\x00"+todo.ID] {
+		t.Fatalf("the legacy grant was not stored: ok=%v err=%v grants=%+v", ok, err, stored.LegacyBackground)
+	}
+
+	s.supervise.mu.Lock()
+	s.supervise.legacyBackground = map[string]bool{}
+	s.supervise.mu.Unlock()
+	s.relays.mu.Lock()
+	s.relays.loaded = false
+	s.relays.mu.Unlock()
+	res, err := runJSON(t, s, "bg1", "task_review", map[string]any{"todo_id": todo.ID, "verdict": "accepted", "note": "after restart"})
+	if err != nil || !strings.Contains(res, "accepted and closed") {
+		t.Fatalf("a persisted legacy notice did not authorize closeout after restart: %s %v", res, err)
+	}
+}
+
+func TestLegacyBackgroundQueuedNoticeSurvivesRestart(t *testing.T) {
+	st := planUpdateStore{&planMemStore{memStore: &memStore{}, plans: map[string]db.TaskPlanRow{}}}
+	s, f, todo := newBackgroundServiceOn(t, st)
+	f.known["bg1"] = true
+	f.setSessions("server",
+		proto.Session{SessionID: "conv1", MachineID: "server", Assistant: true, Status: proto.StatusIdle},
+		proto.Session{SessionID: "bg1", MachineID: "server", Assistant: true, Status: proto.StatusIdle})
+	setSettings(t, s, func(v *Settings) { v.BackgroundSupervisor, v.BackgroundSupervisorMachineID = "bg1", "server" })
+	// A pre-upgrade queue entry has no structured signals and no separately persisted grant.
+	if n := s.queueRelay("bg1", relayMsg{Tool: superviseTool, Text: "旧督办：" + todo.ID, At: time.Now()}); n != 1 {
+		t.Fatalf("queue the legacy notice: %d", n)
+	}
+
+	s.supervise.mu.Lock()
+	s.supervise.legacyBackground = map[string]bool{}
+	s.supervise.mu.Unlock()
+	s.relays.mu.Lock()
+	s.relays.loaded = false
+	s.relays.mu.Unlock()
+	res, err := runJSON(t, s, "bg1", "task_review", map[string]any{"todo_id": todo.ID, "verdict": "accepted", "note": "queued before upgrade"})
+	if err != nil || !strings.Contains(res, "accepted and closed") {
+		t.Fatalf("a queued pre-upgrade notice did not authorize closeout: %s %v", res, err)
+	}
+}
+
+func TestBackgroundCannotReviewLeaderWorkerWithoutLegacyNotice(t *testing.T) {
+	s, f := newQuietService(t)
+	startTaskLeader(t, s, f)
+	w := planWorker(t, s, f, nil)
+	f.known["bg1"] = true
+	f.setSessions("server",
+		proto.Session{SessionID: "conv1", MachineID: "server", Assistant: true, Status: proto.StatusIdle},
+		proto.Session{SessionID: "bg1", MachineID: "server", Assistant: true, Status: proto.StatusIdle})
+	setSettings(t, s, func(v *Settings) { v.BackgroundSupervisor, v.BackgroundSupervisorMachineID = "bg1", "server" })
+	review := func() (string, error) {
+		return runJSON(t, s, "bg1", "task_review", map[string]any{"todo_id": w.ID, "verdict": "accepted", "note": "legacy leader closeout"})
+	}
+	if _, err := review(); err == nil {
+		t.Fatal("the background leader fallback bypassed the legacy notice grant")
+	}
+	if got := todoNow(s, w.ID); got.DoneAt != nil {
+		t.Fatalf("the unauthorized leader review closed the worker: %+v", got)
+	}
+	s.rememberLegacyBackground("bg1", []superviseSignal{{Todo: w.ID}})
+	if res, err := review(); err != nil || !strings.Contains(res, "accepted and closed") {
+		t.Fatalf("the notified leader worker could not be closed out: %s %v", res, err)
+	}
 }
 
 func TestExistingBackgroundStaysBuiltIn(t *testing.T) {

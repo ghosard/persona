@@ -325,6 +325,9 @@ func taskHealth(t Todo, agents []proto.Session, now time.Time) (string, int) {
 	if v.Waits != nil { // the judge found it stopped on the owner's decision (#1277): not to be accepted as done
 		return "停下等用户拍板，别直接验收", 0 // i18n-ignore: the snapshot is the assistant's prompt
 	}
+	if deliveryAwaitsReview(t, agents) {
+		return "已交付·待看", 1
+	}
 	for _, c := range agents {
 		if c.State == proto.StateNeedsYou || c.PendingInteractions > 0 {
 			if wait := now.Sub(cmp.Or(c.StateSince, c.UpdatedAt)); wait >= time.Minute {

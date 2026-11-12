@@ -46,7 +46,7 @@ func (s *Service) snapshotTasks(ctx context.Context, web string) []prompts.Snaps
 			switch {
 			case review == reviewNeedsUser || ask != nil && (ask.Outcome == outcomeDecide || ask.Outcome == outcomeCannot):
 				st = "owner_wait"
-			case atRest && (st == "unread" || review == reviewPending || t.Delivery != nil && t.Delivery.State == deliveryLive ||
+			case atRest && (st == "unread" || review == reviewPending || deliveryAwaitsReview(t, agents) ||
 				ask != nil && (ask.Outcome == "" || ask.Outcome == outcomeDone)):
 				st = "awaiting_review"
 			}
@@ -246,6 +246,19 @@ func taskState(t Todo, agents []proto.Session) string {
 		return "followup"
 	}
 	return "not_started"
+}
+
+// deliveryAwaitsReview is the snapshot's unaccepted live state at rest. A new working stretch is still work in
+// progress, not a second delivery; taskHealth uses the same predicate so State and Health cannot disagree (#5732).
+func deliveryAwaitsReview(t Todo, agents []proto.Session) bool {
+	if t.DoneAt != nil || t.Delivery == nil || t.Delivery.State != deliveryLive {
+		return false
+	}
+	switch taskState(t, agents) {
+	case "followup", "unread", "not_started":
+		return true
+	}
+	return false
 }
 
 // agentWaits: c's turn ended and the hub or its own background work brings it back, so its task waits rather than

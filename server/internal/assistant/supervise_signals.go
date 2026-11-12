@@ -131,7 +131,7 @@ type superviseBook struct {
 	last    time.Time                    // when the last supervision message went out
 	queued  map[string][]superviseSignal // conversation → the signals of the message still waiting in its queue
 	// legacyBackground: conversation + "\x00" + todo → an old notice reached this background conversation, so it may
-	// finish that task. Memory only on purpose: after a restart an unknown queued notice moves to main.
+	// finish that task. relayState persists the same grant across manager restarts.
 	legacyBackground map[string]bool
 	timer            *time.Timer
 	timerAt          time.Time

@@ -52,10 +52,9 @@ func (s *Service) isBackground(ctx context.Context, id string) bool {
 	return id != cfg.Main && cfg.BackgroundSupervisor == id
 }
 
-// backgroundSupervises: self is the legacy background supervisor and actually received a pre-#5732 notice for task t.
-// Merely being configured is not enough: new main-supervised work cannot be accepted here. The in-memory grant covers
-// the whole turn after a queued notice is drained. After a restart an unknown queued notice moves to main instead, so
-// no old task is stranded and no new grant is invented.
+// backgroundSupervises: self is the legacy background supervisor and has durable evidence for task t. A pre-upgrade
+// ledger may name it directly; a notice delivered or queued for it is also persisted in relayState. Merely being
+// configured is never enough: new main-supervised work cannot be accepted here, including after a restart.
 func (s *Service) backgroundSupervises(ctx context.Context, self string, t Todo) bool {
 	if t.Origin == "" || t.Supervision == nil || !s.isBackground(ctx, self) {
 		return false
@@ -64,24 +63,57 @@ func (s *Service) backgroundSupervises(ctx context.Context, self string, t Todo)
 	if s.isLeader(ctx, sup) || s.isLeaderRef(sup) {
 		return false
 	}
+	return sup == self || s.legacyBackgroundNotice(ctx, self, t.ID)
+}
+
+// legacyBackgroundNotice reports whether a real old notice reached this background conversation. The in-memory grant
+// covers the current turn; relayState keeps it across restarts and reconstructs it for pre-upgrade queued messages.
+func (s *Service) legacyBackgroundNotice(ctx context.Context, self, todoID string) bool {
+	key := self + "\x00" + todoID
 	b := &s.supervise
 	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.legacyBackground[self+"\x00"+t.ID]
+	granted := b.legacyBackground[key]
+	b.mu.Unlock()
+	if granted {
+		return true
+	}
+	r := &s.relays
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return s.relayLocked(ctx) && r.st.LegacyBackground[key]
 }
 
 // rememberLegacyBackground records the tasks whose old notices were delivered or queued for this background
 // conversation. Only explicit legacy signals can route there now (digestTo), so this is also the closeout permission.
 func (s *Service) rememberLegacyBackground(conversation string, list []superviseSignal) {
+	keys := make([]string, 0, len(list))
 	b := &s.supervise
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	b.init()
 	for _, g := range list {
 		if g.Todo != "" {
-			b.legacyBackground[conversation+"\x00"+g.Todo] = true
+			key := conversation + "\x00" + g.Todo
+			b.legacyBackground[key] = true
+			keys = append(keys, key)
 		}
 	}
+	b.mu.Unlock()
+	if len(keys) == 0 {
+		return
+	}
+	r := &s.relays
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !s.relayLocked(context.Background()) {
+		return
+	}
+	if r.st.LegacyBackground == nil {
+		r.st.LegacyBackground = map[string]bool{}
+	}
+	for _, key := range keys {
+		r.st.LegacyBackground[key] = true
+	}
+	s.saveRelayLocked()
 }
 
 // followUpWords tells the caller who follows a newly handed-out task: the main conversation, with its supervision

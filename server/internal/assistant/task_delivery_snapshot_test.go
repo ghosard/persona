@@ -25,6 +25,7 @@ func TestSnapshotTasksUseDeliveryAndOwnerWaitStates(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.setTaskDelivery(ctx, live.ID, TodoDelivery{State: deliveryLive, At: time.Now()})
+	s.superviseTodo(ctx, live.ID, "conv1", []string{"result verified"}, 30)
 
 	byID := func() map[string]struct{ State, Health string } {
 		out := map[string]struct{ State, Health string }{}
@@ -37,7 +38,7 @@ func TestSnapshotTasksUseDeliveryAndOwnerWaitStates(t *testing.T) {
 	if got[delivered.ID].State != "已交付·待看" || got[delivered.ID].Health != "已交付·待看" {
 		t.Fatalf("pending review projection = %+v", got[delivered.ID])
 	}
-	if got[live.ID].State != "已交付·待看" {
+	if got[live.ID].State != "已交付·待看" || got[live.ID].Health != "已交付·待看" {
 		t.Fatalf("unaccepted live projection = %+v", got[live.ID])
 	}
 
