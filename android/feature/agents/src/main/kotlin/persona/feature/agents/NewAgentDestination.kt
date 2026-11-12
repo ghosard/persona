@@ -14,6 +14,7 @@ import persona.core.navigation.ChatRoute
 import persona.core.navigation.ConversationKind
 import persona.core.navigation.Navigator
 import persona.core.navigation.NewAgentRoute
+import persona.core.navigation.NewAgentStarts
 
 /**
  * The new agent page opened by key (`NewAgentRoute`, the knowledge base's "Open Agent"): the form of Agents' "New session",
@@ -33,7 +34,7 @@ internal fun NewAgentDestination(route: NewAgentRoute, navigator: Navigator, dep
         }
         return
     }
-    val prefill = NewAgentPrefill(route.machineId, route.cwd, route.prompt)
+    val prefill = NewAgentPrefill(route.machineId, route.cwd, route.prompt, route.context)
     val model = viewModel(key = "new-agent-page:${service.scope}:${System.identityHashCode(service)}:${route.hashCode()}") {
         NewAgentViewModel(service, wiring.creationPreferences?.let { AgentCreationPreferences(context, it) } ?: AgentCreationPreferences(context),
             dependencies.sessions().machines, sender = dependencies.sender(), adopt = dependencies.sessions()::adopt, prefill = prefill,
@@ -46,6 +47,8 @@ internal fun NewAgentDestination(route: NewAgentRoute, navigator: Navigator, dep
         state.created?.let { session ->
             // Before leaving: popping this page clears the model's scope.
             model.acknowledge()
+            // The page that opened this one for something of its own hears which Agent started (#5933).
+            route.tag?.let { NewAgentStarts.started(it, session.machineId, session.sessionId) }
             navigator.back()
             // An agent, so it opens in Agents whichever tab this page was on.
             navigator.navigate(ChatRoute(session.machineId, session.sessionId, kind = ConversationKind.Agent))
