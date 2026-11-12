@@ -45,7 +45,13 @@ final class ReturnToChatTests: XCTestCase {
         if regularOnly, app.windows.firstMatch.frame.width <= 600 { throw XCTSkip("needs a regular width (iPad, iPhone Duo open)") }
         let row = app.buttons.matching(NSPredicate(format: "identifier == 'agents.row' AND label CONTAINS %@",
                                                   "给天气 App 加主屏幕小组件")).firstMatch // i18n-ignore: bundled synthetic fixture title
-        if !row.exists || !row.isHittable {
+        let oneSidebar = app.windows.firstMatch.frame.width > 600 && app.buttons["sidebar-main"].waitForExistence(timeout: 15)
+        if (!row.exists || !row.isHittable) && oneSidebar {
+            // The one sidebar (iPad, iPhone Duo open; #4206): the agents are under Persona's rows, with no search of
+            // their own; down the column until the row is built.
+            let column = app.collectionViews.firstMatch
+            for _ in 0..<10 where !row.exists { column.swipeUp() }
+        } else if !row.exists || !row.isHittable {
             app.revealAgentsSearch()
             let search = app.searchFields.firstMatch
             XCTAssertTrue(search.waitForExistence(timeout: 5), "the Agents search did not open")

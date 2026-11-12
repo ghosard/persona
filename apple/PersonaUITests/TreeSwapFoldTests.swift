@@ -35,6 +35,14 @@ final class TreeSwapFoldTests: XCTestCase {
         XCTAssertTrue(again?.key.hasSuffix(fixture) == true, "Agents did not show the chat again after the fold: \(String(describing: again))")
     }
 
+    /// Health's row: under More in the one sidebar (#4206), opened when Health is not out yet (the tree built again
+    /// folds More).
+    @MainActor private func healthRow(_ app: XCUIApplication, timeout: TimeInterval) -> XCUIElement {
+        let health = app.buttons["sidebar-health"].firstMatch, more = app.buttons["sidebar-more"].firstMatch
+        if !health.waitForExistence(timeout: 2), more.waitForExistence(timeout: timeout) { more.tap() }
+        return health
+    }
+
     /// Health's checkup reports on their way up (`-showReportUpload`, three made-up 24 MB reports the mock hub reads
     /// slowly, one after another): after the fold and the unfold, Health opened again shows them still going up. The
     /// uploads are the app's, not the page's (the page is built again, at the Persona page's root).
@@ -47,16 +55,16 @@ final class TreeSwapFoldTests: XCTestCase {
                                "-showReportUploadMB", "24", "-probes", "YES", "-swapTreeAt", "30", "-swapTreeWhole", "YES"]
         app.launchPinned()
         guard app.windows.firstMatch.frame.width > 600 else { throw XCTSkip("the tree swaps in regular width only (iPad, iPhone Duo open)") }
-        let health = app.buttons["sidebar-health"].firstMatch
-        XCTAssertTrue(health.waitForExistence(timeout: 20), "no Health in the sidebar:\n\(app.debugDescription)")
+        let health = healthRow(app, timeout: 20)
+        XCTAssertTrue(health.waitForExistence(timeout: 5), "no Health in the sidebar:\n\(app.debugDescription)")
         health.tap()
         XCTAssertTrue(app.buttons["取消上传 \(names[0])"].waitForExistence(timeout: 15), "the reports did not start up:\n\(app.debugDescription)")
         XCTAssertEqual(app.probe("tree", as: Swaps.self)?.count, 0, "the width flipped before the reports were on their way")
         let flipEnd = Date.now.addingTimeInterval(60)
         while app.probe("tree", as: Swaps.self)?.count != 1, Date.now < flipEnd { sleep(1) }
         XCTAssertEqual(app.probe("tree", as: Swaps.self)?.rebuilt, 2, "the tree did not swap to the shell and back")
-        let again = app.buttons["sidebar-health"].firstMatch
-        XCTAssertTrue(again.waitForExistence(timeout: 10), "no Health in the sidebar after the fold:\n\(app.debugDescription)")
+        let again = healthRow(app, timeout: 10)
+        XCTAssertTrue(again.waitForExistence(timeout: 5), "no Health in the sidebar after the fold:\n\(app.debugDescription)")
         again.tap()
         let going = NSPredicate { _, _ in names.contains { app.buttons["取消上传 \($0)"].exists } }
         expectation(for: going, evaluatedWith: nil)

@@ -155,8 +155,10 @@ class AppleRenameTests(unittest.TestCase):
         self.assertIn('TabView(selection: $model.selectedTab)', tabs)
         self.assertIn('AssistantRootTab()', tabs)
         self.assertIn('AgentsRootTab()', tabs)
-        self.assertRegex(tabs, r'#if !os\(iOS\)\s+InboxRootTab\(\)\s+SettingsRootTab\(\)\s+#endif')
-        self.assertRegex(tabs, r'#if os\(iOS\)\s+\.modifier\(PadRoutes\(router: pad\)\)\s+#endif')
+        # iOS at regular width (iPad, iPhone Duo open) is the one sidebar, no tabs (#4206); the other platforms keep theirs.
+        self.assertRegex(tabs, r'#if os\(iOS\)\s+(//[^\n]*\s+)*ChatsView\(\)\s+\.environment\(\\\.oneSidebar, true\)[\s\S]*?'
+                               r'\.modifier\(PadRoutes\(router: pad\)\)\s+#else\s+TabView\(selection: \$model\.selectedTab\)')
+        self.assertRegex(tabs, r'InboxRootTab\(\)\s+SettingsRootTab\(\)\s+\}\s+#endif')
         for name in ('Assistant', 'Agents', 'Inbox', 'Settings'):
             self.assertRegex(root, r'private struct ' + name + r'RootTab: TabContent')
         routes = root.split('final class PadRouter: TabRouter {', 1)[1].split('private struct PadRoutes:', 1)[0]

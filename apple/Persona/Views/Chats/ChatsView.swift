@@ -405,9 +405,10 @@ struct ChatsView: View {
                 // Not Settings' route: Settings comes over the window, the agent stays (`PadRouter` puts the tab back).
                 .onChange(of: model.selectedTab) { _, tab in if oneSidebar, tab == .assistant || tab == .feishu { leaveAgent() } }
                 // An agent opened is Agents in front; closed, Persona's page again, unless Messages took the column (the
-                // agent left for it).
+                // agent left for it). Not from a tree on its way out (`leaving`): its split empties the path as it goes,
+                // and the tab it set back to Persona kept the new tree from opening the chat again (ReturnToChatTests).
                 .onChange(of: path.isEmpty) { _, empty in
-                    guard oneSidebar else { return }
+                    guard oneSidebar, !leaving else { return }
                     if !empty { model.selectedTab = .chats } else if model.selectedTab == .chats { model.selectedTab = .assistant }
                 }
                 #endif

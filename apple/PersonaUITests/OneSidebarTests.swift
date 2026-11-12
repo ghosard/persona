@@ -78,6 +78,25 @@ final class OneSidebarTests: XCTestCase {
 
     @MainActor private func element(_ id: String) -> XCUIElement { app.descendants(matching: .any)[id].firstMatch }
 
+    /// The buttons in the window's top leading corner that fold the column or bring it back, the page's own or the
+    /// system's, that can be tapped there.
+    @MainActor private func columnButtons() -> [XCUIElement] {
+        let window = app.windows.firstMatch.frame
+        return app.buttons.matching(NSPredicate(format: "identifier IN %@ OR label IN %@",
+                                                ["assistant-sidebar-button", "assistant-sidebar-collapse", "feishu-sidebar-button"],
+                                                ["显示边栏", "隐藏边栏", "Show Sidebar", "Hide Sidebar"]))
+            .allElementsBoundByIndex
+            .filter { $0.isHittable && $0.frame.minX >= window.minX - 1 && $0.frame.midX < window.midX && $0.frame.midY < window.minY + 200 }
+    }
+
+    /// One button for the column at the top corner, a moment after the column moved.
+    @MainActor private func assertOneColumnButton(_ state: String, file: StaticString = #filePath, line: UInt = #line) {
+        sleep(1) // longer than the slide (`Theme.Motion.layout`)
+        let found = columnButtons()
+        XCTAssertEqual(found.count, 1, "\(state): not one button for the column at the top corner: "
+                       + "\(found.map { "\($0.identifier) “\($0.label)” \($0.frame)" })\n\(app.debugDescription)", file: file, line: line)
+    }
+
     /// The open Duo held on its side: the system's bars down the side.
     @MainActor private var duoOnItsSide: Bool {
         let w = app.windows.firstMatch.frame
@@ -160,6 +179,33 @@ final class OneSidebarTests: XCTestCase {
         shot("folded")
         back.tap()
         XCTAssertTrue(collapse.waitForExistence(timeout: 5), "the column did not come back")
+    }
+
+    /// One button for the column at a time, out or folded, on Persona's page and on Messages (2026-11-12, the owner: on
+    /// the open Duo on its side the system's Show Sidebar and the page's own both showed, one over the other).
+    @MainActor func testOneButtonForTheColumnAtATime() throws {
+        try launch(["-integrations.lark.enabled", "YES"])
+        let collapse = element("assistant-sidebar-collapse"), main = element("sidebar-main")
+        assertOneColumnButton("Persona's page, the column out")
+        shot("one-button-out")
+        collapse.tap()
+        XCTAssertTrue(main.waitForNotHittable(timeout: 5), "the column did not fold")
+        assertOneColumnButton("Persona's page, the column folded")
+        shot("one-button-folded")
+        bringColumnOut()
+        assertOneColumnButton("Persona's page, the column out again")
+        // Messages has a button of its own for the column (`OneSidebarHome`).
+        element("sidebar-more").tap()
+        let messages = element("sidebar-messages")
+        XCTAssertTrue(messages.waitForExistence(timeout: 10), "no Messages under More:\n\(app.debugDescription)")
+        messages.tap()
+        XCTAssertTrue(element("feishu-conversations").waitForExistence(timeout: 10), "Messages did not open:\n\(app.debugDescription)")
+        if !duoUpright { // upright the pick slid the column away already (#4852)
+            assertOneColumnButton("Messages, the column out")
+            collapse.tap()
+            XCTAssertTrue(main.waitForNotHittable(timeout: 5), "the column did not fold")
+        }
+        assertOneColumnButton("Messages, the column folded")
     }
 
     /// More opens inline to Meeting Recording, Health and Machines, and folds again; a place opens beside the column.
@@ -299,7 +345,9 @@ final class OneSidebarTests: XCTestCase {
     /// Upright on the open Duo: an agent picked in the column slides it away (#4852), and ‹ on that agent goes back to
     /// Persona's page, not the column out again (#3641).
     @MainActor func testUprightBackFromAnAgentGoesToPersonasPage() throws {
-        try launch()
+        // A column wider than the system's (about 200 pt upright): in that one the Pinned rows take two lines, the filter
+        // chips wrap under the foot and the first Needs You card starts below the first screen, out of a tap's reach.
+        try launch(["-agents.list.width", "340"])
         guard duoUpright else { throw XCTSkip("the open Duo upright only") }
         // The agents are under the first screen upright, and synthetic drags miss there: the first Needs You card's
         // place, at the column's foot, is tapped (a tap scrolls it in), which opens its agent as its row would.

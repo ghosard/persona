@@ -1,10 +1,11 @@
 import XCTest
 
 /// The iPad's sidebar is the one sidebar (docs/apple/ios.md, "iPad"; #4206): Main Chat first, then Inbox … Knowledge, the
-/// rarer places under More, Recent and the Agents list, New Chat + search and Settings at the foot. No tabs: Inbox opens
-/// beside the sidebar, Settings as a sheet. `OneSidebarTests` covers the rest of the column. Against scripts/mock/mock_hub.py
-/// (PERSONA_MOCK_HUB), on an iPad simulator, portrait and landscape. TEST_RUNNER_PERSONA_SHOTS=<dir> keeps screenshots;
-/// TEST_RUNNER_PERSONA_HOLD=<seconds> stays on each page for `simctl io screenshot` (XCUITest's own turn in landscape).
+/// rarer places under More, Pinned, All Chats and the Agents list, New Chat + search and Settings at the foot. No tabs:
+/// Inbox opens beside the sidebar, Settings as a sheet. `OneSidebarTests` covers the rest of the column. Against
+/// scripts/mock/mock_hub.py (PERSONA_MOCK_HUB), on an iPad simulator, portrait and landscape. TEST_RUNNER_PERSONA_SHOTS=<dir>
+/// keeps screenshots; TEST_RUNNER_PERSONA_HOLD=<seconds> stays on each page for `simctl io screenshot` (XCUITest's own turn
+/// in landscape).
 final class IPadSidebarTests: XCTestCase {
     private var app: XCUIApplication!
 

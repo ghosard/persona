@@ -227,8 +227,10 @@ struct AssistantTopBar: View {
     private var classicBar: some View {
         // Beside the one sidebar its header's button folds it: this one only brings it back, and is not there while the
         // column is out. Left out, not faded: a glass button made see-through (or slid away) while the split moved its
-        // columns left the page taking no touches at all on iPhone Duo open (2026-11-10).
-        let sidebarButtonShown = !(oneSidebar && sidebarShown)
+        // columns left the page taking no touches at all on iPhone Duo open (2026-11-10). Nor under side bars (the open
+        // Duo on its side): the system's bar is shown there for New Chat (#4854), so the split puts its own Show Sidebar
+        // in the side column, as beside an agent's chat, and this one sat under it, two of them (2026-11-12).
+        let sidebarButtonShown = !(oneSidebar && (sidebarShown || newInSideBar))
         return HStack(alignment: .top) {
             if sidebarButtonShown {
                 GlassEffectContainer {
@@ -242,10 +244,9 @@ struct AssistantTopBar: View {
             Spacer(minLength: 8)
             face
             Spacer(minLength: 8)
-            if newInSideBar {
-                // The face stays in the middle: an empty spot as wide as the sidebar button's side.
-                Color.clear.dynamicTypeSize(...DynamicTypeSize.xxLarge).scaledFrame(width: Theme.Size.tapTarget, height: Theme.Size.tapTarget)
-            } else {
+            // Under side bars both corners are the system's (Show Sidebar and New Chat in its side column): nothing on
+            // either side, so the face stays in the middle.
+            if !newInSideBar {
                 GlassEffectContainer {
                     Self.circle(Theme.Icon.compose, label: String(localized: "New Chat [Quick Actions ea4b29]"), id: "assistant-new") {
                         Haptics.tap()
