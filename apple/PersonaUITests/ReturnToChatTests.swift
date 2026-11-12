@@ -51,6 +51,9 @@ final class ReturnToChatTests: XCTestCase {
             // their own; down the column until the row is built.
             let column = app.collectionViews.firstMatch
             for _ in 0..<10 where !row.exists { column.swipeUp() }
+            // Built is not on screen: the column may have started further down, the row above it under the header.
+            for _ in 0..<6 where row.exists && !row.isHittable { column.swipeDown() }
+            for _ in 0..<6 where row.exists && !row.isHittable { column.swipeUp() }
         } else if !row.exists || !row.isHittable {
             app.revealAgentsSearch()
             let search = app.searchFields.firstMatch
@@ -95,9 +98,14 @@ final class ReturnToChatTests: XCTestCase {
     /// snapshots on the way to the background no longer do, #2836): the new Agents tree opens the chat again. On a regular
     /// width only (iPad), where the swap is from the split to the shell and back.
     @MainActor func testTheChatStaysAfterTheTreeSwaps() throws {
-        let picked = try openSibling(fresh: false, extra: ["-swapTreeAt", "20"], regularOnly: true)
+        // The swap after the chat is picked: finding its row in the one sidebar's column can take more than 20 s.
+        let swapAt: UInt32 = 45
+        let start = Date.now
+        let picked = try openSibling(fresh: false, extra: ["-swapTreeAt", "\(swapAt)"], regularOnly: true)
         let launched = app.probe("chat", as: Chat.self, page: "agents")?.appeared ?? 0
-        sleep(25) // past the swap and back
+        XCTAssertLessThan(Date.now.timeIntervalSince(start), Double(swapAt) - 5, "the chat was picked too late for the swap")
+        // Past the swap and back: its clock starts once the app's root is up, a few seconds after `start`.
+        sleep(swapAt + 15 - UInt32(Date.now.timeIntervalSince(start)))
         XCTAssertGreaterThan(app.probe("chat", as: Chat.self, page: "agents")?.appeared ?? .max, launched, "the tree did not swap")
         XCTAssertEqual(shownChat(), picked, "after the tree swapped")
     }

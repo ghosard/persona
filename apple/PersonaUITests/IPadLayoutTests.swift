@@ -119,15 +119,17 @@ final class IPadLayoutTests: XCTestCase {
             // Above the list column (in the status bar), the same color as the column under it; the detail column's
             // strip stays the detail's.
             XCTAssertTrue(near(color(8, 2), color(8, 34)), "\(style): the strip above the list (\(color(8, 2))) is not the list's color (\(color(8, 34)))")
+            // Under the page's top bar, above the conversation: lower down a message bubble can be there (the main chat's
+            // chart answer since 2026-11-12), not the page.
             let right = app.windows.firstMatch.frame.width - 40
-            XCTAssertTrue(near(color(right, 2), color(right, 400)), "\(style): the strip above the detail changed")
+            XCTAssertTrue(near(color(right, 2), color(right, 120)), "\(style): the strip above the detail changed (\(color(right, 2)) vs \(color(right, 120)))")
             // Close the column from its header's button: what is at the top there is the detail's color again, as below it.
             let toggle = app.buttons["assistant-sidebar-collapse"].firstMatch
             XCTAssertTrue(toggle.exists, "no sidebar button:\n\(app.debugDescription)")
             toggle.tap()
             sleep(1)
             image = app.screenshot().image
-            XCTAssertTrue(near(color(8, 2), color(8, 400)), "\(style): the list's color stayed at the top after closing it (\(color(8, 2)))")
+            XCTAssertTrue(near(color(8, 2), color(8, 120)), "\(style): the list's color stayed at the top after closing it (\(color(8, 2)))")
             app.terminate()
         }
     }

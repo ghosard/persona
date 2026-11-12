@@ -267,7 +267,9 @@ final class OneSidebarTests: XCTestCase {
     /// An agent opened from the list shows beside the column with its row selected and Main Chat not; Main Chat closes it
     /// and is the selected row again.
     @MainActor func testAnOpenedAgentIsSelectedAndPersonaClosesIt() throws {
-        try launch(["-openSession", "macbook/a1f3c2d4-0000-4000-8000-000000000002"])
+        // One of the current assistant's agents (the list shows only its computers since #5587: the mock hub's MacBook is
+        // another assistant's), waiting for the user so it never folds into Idle Repositories with the time of day.
+        try launch(["-openSession", "studio/a1f3c2d4-0000-4000-8000-000000000005"])
         // Upright the column is over the page and goes with a pick: `testUprightBackFromAnAgentGoesToPersonasPage`.
         guard !duoUpright else { throw XCTSkip("the column beside the page only (iPad, the open Duo on its side)") }
         // The open header's title, or the slim one it folds to (a chat that opens scrolled to its end).
