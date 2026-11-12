@@ -183,9 +183,37 @@ export async function brotliCopies(dir: string, files: string[]): Promise<{ file
  * first-screen code changed: #5310 +255 B, which failed main's build, #5193 +138 B, the two merged -321 B, #5320 +29 B.
  * Counted so, ja is 589,323 B on main at c7164e477e (595,073 B the old way; en 585,737 B, zh-Hans 586,565 B), and the
  * same within 1 B at 1c78a837d6, 482f3b93df and 4b72a763c8. The budget is that, with 0 B of room: the 175 B main had,
- * #5193's 98 B among them, are taken back. Raise it on purpose, in the change that needs it.
+ * #5193's 98 B among them, are taken back. And 529 B for the error banner over the composer (#5313: ja 589,852 B
+ * against 589,323 B on main at fc16299dd: which error a chat stopped on and the rules that keep it there or in the chat,
+ * its dismissal kept per conversation, a Retry that did not go bringing it back, the banner scrolled into view in its
+ * box once, the keyboard back to the composer, the notice's ✕ and 28 px buttons, the failure note and the refused-send
+ * card drawn as the same notice, and their words). And 444 B for cindy's run status bar (#5312: ja 590,296 B against
+ * 589,852 B on main at a38ddd0cd: the state words worked out from the turn's newest steps in an Agent session and the plain
+ * phases in a Persona conversation, Done only for a finished turn and its pop, their words; the speed history, its button
+ * and card load once an Agent's turn runs). And 1,231 B for switching an Agent between Claude Code and Codex (#5054:
+ * ja 591,480 B against 590,071 B on main at d7536a601c, +1,409 B, of which 225 B fit the room main had, plus 47 B of
+ * room: the switch divider's chip above the first message the other engine got, the live stretch's items in a
+ * switched-back conversation, the old session link's redirect to the conversation's row, the pill's engine switch state
+ * and their words; the earlier stretches' windows, reading and drawing, the handoff panel and their words, the "Switch
+ * Agent?" dialog and the panel's engine code load lazily). And 453 B because #5303 and #5457 landed together (#5488):
+ * #5303 counted the room main had at d7536a601c as its own, and #5457 (#5420, the provider import link) used that room
+ * too, merged in between; ja 591,939 B on main at 48f1e053b5, plus 41 B of room. And 684 B for each turn's cost on the
+ * reply bar (#5426: ja 592,664 B against 591,753 B on main at cc83e770df, +911 B, of which 227 B fit the room main had:
+ * collecting an exchange's usage while the chat's lines are built, a subagent's once in the chat, in the exchange that
+ * launched it, and handing it to the reply; the prices, the sums by model, the card and their words load with the reply
+ * bar). And 279 B for the same usage bar after the command card's wording landed (#5512, #5539: ja 592,943 B against
+ * 592,664 B on main at 0856795596: the command-answer labels and the usage computation share the reply bar's helpers;
+ * the command card itself and its usage card stay lazy, outside the idle tier). And 82 B for Done paging the list's last
+ * days now that the list carries only the newest done items (#5549: ja 593,025 B against 592,867 B on main at 86c439b97,
+ * +158 B, of which 76 B fit the room main had: Undo reopening what the hub moved, listed or not, a route reading an item
+ * only the history has or, once, the hub's copy by id, and the state that says it is being read). And 32 B because #5592
+ * and #4743 landed together: #5592 (+64 B, a Done group's first page starting past the done items the list holds)
+ * counted the 69 B of room main had at 0bfcf2879 as its own, and #4743 (+37 B) used part of it, merged in between; ja
+ * 593,057 B on main at 18de01b8d, with 0 B of room. And 94 B for the six-line composer (#5674, #5704, #5713: ja
+ * 593,151 B on main at 5f60a1c45: the composer's fixed maximum-height token and manual-scroll measurement; the
+ * layout is unchanged by this accounting). Raise it on purpose, in the change that needs it.
  */
-export const FIRST_SCREEN_BUDGET = 589_323;
+export const FIRST_SCREEN_BUDGET = 593_151;
 
 // The hash in a built file's name: the 8 characters of Rollup's [hash] (url-safe base64) between "-" and the
 // extension, as vite.config.ts names every chunk and asset ("assets/[name]-[hash].js", "[name]-[hash][extname]").
@@ -288,10 +316,16 @@ export function firstScreenOverBudget(bytes: [string, number][], budget = FIRST_
  * the idle ModelPicker, out of the first screen into a chunk of its own), and 64 B for managing launchers from the
  * pickers (#4389's controls took the idle tier 8 B over; take it back if those controls get lighter), and 13,113 B for
  * the extension view renderer (#3614: it left the first screen for the idle tier, which went from 18,615 B to 31,728 B;
- * 31,802 B after merging main).
+ * 31,802 B after merging main). And 535 B for the composer's + / @ panel (#5324, 2026-11-12: ComposerPanel, which
+ * took the @ menu's rows off the first screen, beside #5325's / palette and #5327's queue panel, which together left
+ * less room than it needs: 43,729 B merged with main at f18875688; 43,809 B with the review's fixes merged with main at
+ * 0fef425ef, and 31 B over that so the next main does not tip it). It stays idle: a typed @ opens it at once.
+ * And 183 B for the single-category stacked bar's share predicate and horizontal segmented renderer (#5386,
+ * 2026-11-12: 43,782 B measured on main before the change, 43,965 B after; the chart chunk is idle by contract —
+ * code-views-lazy.test enforces `idle: true` — so the renderer has no intent tier to move into).
  * Every other lazy page loads on intent, not at idle; raise it on purpose, in the change that needs it.
  */
-export const IDLE_TIER_BUDGET = 43_194;
+export const IDLE_TIER_BUDGET = 43_965;
 
 const gzip = promisify(gzipCompress);
 
