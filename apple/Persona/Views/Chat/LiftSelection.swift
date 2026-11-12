@@ -213,6 +213,9 @@ private struct LiftTextView: UIViewRepresentable {
 
     func updateUIView(_ v: LiftUITextView, context: Context) {
         let menu = menu
+        #if DEBUG
+        LiftTrace.note("text view update rows=\(rows.count)")
+        #endif
         v.place = place
         v.show(text, words, design: UIFontDescriptor.SystemDesign(StyleSpec.current.fontDesign)) // the app's, as RootView sets it
         v.snap(to: rows, folds: folds, texts: texts)
@@ -324,12 +327,24 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
         laidOut = width
         textContainer.size = CGSize(width: width, height: .greatestFiniteMagnitude)
         let look = ReplyText.Look(source.words, design: design, traits: traitCollection)
+        #if DEBUG
+        let words: NSAttributedString = LiftTrace.time("reply-text \(source.text.count) chars w=\(Int(width))") {
+            switch source.words {
+            case .plain: ReplyText.plain(source.text, look: look)
+            case .reply: ReplyText.attributed(source.text, look: look, width: width)
+            }
+        }
+        let cleared = LiftTrace.time("reply-text clear") { ReplyText.clear(words) }
+        LiftTrace.time("text view set text") { attributedText = cleared }
+        LiftTrace.time("resnap (render) rows=\(rows.count)") { resnap() }
+        #else
         let words: NSAttributedString = switch source.words {
         case .plain: ReplyText.plain(source.text, look: look)
         case .reply: ReplyText.attributed(source.text, look: look, width: width)
         }
         attributedText = ReplyText.clear(words)
         resnap()
+        #endif
         #if DEBUG
         setNeedsLayout() // `LiftLines`
         #endif
@@ -345,7 +360,11 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
         self.rows = rows
         self.folds = folds
         self.texts = texts
+        #if DEBUG
+        LiftTrace.time("resnap (snap) rows=\(rows.count)") { resnap() }
+        #else
         resnap()
+        #endif
     }
 
     /// Lays the words out breaking where the chat's do (`LiftLayout.follow`), then again with each line on the chat's
@@ -1120,7 +1139,12 @@ enum ReplyText {
             blocks.append(Block())
             open = nil
             levels = []
-            guard let image = ReplyTable.picture(source, width: width, traits: look.traits) else {
+            #if DEBUG
+            let image = LiftTrace.time("table picture \(source.count) chars") { ReplyTable.picture(source, width: width, traits: look.traits) }
+            #else
+            let image = ReplyTable.picture(source, width: width, traits: look.traits)
+            #endif
+            guard let image else {
                 add(verbatim(copied, look.body), in: blocks.count - 1, lineSpacing: true)
                 return
             }

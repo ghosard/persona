@@ -643,6 +643,9 @@ final class MessageLiftUITests: XCTestCase {
         let pair = "persona://pair?url=" + reportHub.addingPercentEncoding(withAllowedCharacters: .alphanumerics)! + "&token=mock"
         app.launchArguments = ["-pairURL", pair, "-tab", "dev", "-openSession", "macbook/a1f3c2d4-0000-4000-8000-000000000090",
                                "-ui.scheme", scheme, "-openChatsFresh", "YES", "-openDraftsFresh", "YES", "-showFrameProbe", "YES"]
+        if let variant = ProcessInfo.processInfo.environment["PERSONA_LIFT_VARIANT"] { // #5291 diagnosis, temporary
+            app.launchArguments += ["-showLiftVariant", variant, "-showLiftTrace", "YES"]
+        }
         app.launchPinned()
         acceptIconAlert(timeout: 3)
         let near = "12.3 细节 3"

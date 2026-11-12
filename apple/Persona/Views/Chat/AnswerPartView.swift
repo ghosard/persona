@@ -127,6 +127,21 @@ private struct AnswerPartWords: View {
     }
 }
 
+#if DEBUG
+/// `LiftTrace`: when a lifted part gets its height, and which.
+private struct LiftTracePart: ViewModifier {
+    let n: Int
+
+    func body(content: Content) -> some View {
+        if LiftTrace.on {
+            content.onGeometryChange(for: Int.self) { Int($0.size.height) } action: { LiftTrace.note("part \(n) height \($0)") }
+        } else {
+            content
+        }
+    }
+}
+#endif
+
 /// The lifted copy of a long answer drawn in parts (#5221): all of its parts again, each `Part.gap` under the one
 /// before, as the chat stacks them (so it looks as the answer did whole, `AnswerPartsLookTests`), the pressed part
 /// marked for the lift to put it where it was (`MessageLift.part`). Lifted, it is a lazy stack: only the parts near the
@@ -141,9 +156,20 @@ struct AnswerPartsLift: View {
     @Environment(\.liftWhole) private var whole
     /// The parts under the pressed one are laid out (from the frame after the first, #5291).
     @State private var grown = false
+    /// `-showLiftVariant 1`: every part as it shows, from the first frame (#5256's lazy copy).
+    private static var allAtOnce: Bool {
+        #if DEBUG
+        LiftTrace.variant == 1
+        #else
+        false
+        #endif
+    }
 
     var body: some View {
         let parts = AnswerPartMemo.parts(item.text ?? "")
+        #if DEBUG
+        let _ = LiftTrace.note("parts body pressed=\(pressed)/\(parts.count) whole=\(whole) grown=\(grown)")
+        #endif
         if whole || parts.isEmpty {
             VStack(alignment: .leading, spacing: 0) { rows(parts, whole: true) }
                 .markdownSoftBreakMode(.lineBreak)
@@ -152,7 +178,18 @@ struct AnswerPartsLift: View {
             LazyVStack(alignment: .leading, spacing: 0) { rows(parts, whole: false) }
                 .scrollTargetLayout()
                 .markdownSoftBreakMode(.lineBreak)
+                #if DEBUG
+                .onAppear {
+                    switch LiftTrace.variant {
+                    case 2: DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { grown = true }
+                    case 3: break
+                    default: break
+                    }
+                }
+                .task { if LiftTrace.variant == 0 || LiftTrace.variant == 1 { grown = true } }
+                #else
                 .task { grown = true }
+                #endif
         }
     }
 
@@ -162,12 +199,18 @@ struct AnswerPartsLift: View {
                 .liftPressedPart(true, whole: true)
         }
         ForEach(parts.indices, id: \.self) { n in
-            if whole || grown || n <= pressed || n == parts.count - 1 {
+            if whole || grown || n <= pressed || n == parts.count - 1 || Self.allAtOnce {
                 let key = AnswerPartMemo.key(message, n)
                 let text = RowMemo.assistant(key) { _ in AssistantRowText(parts[n].text) }
+                #if DEBUG
+                let _ = LiftTrace.note("part \(n) built whole=\(whole) chars=\(parts[n].text.count)")
+                #endif
                 AnswerPartWords(text: text, key: key, message: message)
                     .liftPressedPart(n == pressed, whole: whole)
                     .padding(.top, n == 0 ? 0 : parts[n].gap)
+                    #if DEBUG
+                    .modifier(LiftTracePart(n: n))
+                    #endif
             } else {
                 // The lift's first frame lays out the pressed part alone, as lifting a part did (#5291): the parts
                 // under it hold their place as tall as the card, so the copy opens at the pressed part as it will be

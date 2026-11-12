@@ -112,6 +112,9 @@ final class MessageMenu {
     /// message drawn in parts first lays out all of them (`liftWhole`); the selecting starts once they are there.
     func selectInPlace(at point: CGPoint?) {
         guard let lift else { return }
+        #if DEBUG
+        LiftTrace.start("select part=\(lift.part.map(String.init) ?? "-") whole=\(liftWhole)")
+        #endif
         Haptics.tap()
         if lift.part != nil, !liftWhole {
             pendingSelect = InPlaceSelect(at: point)
@@ -328,12 +331,22 @@ private struct MessageLongPress<P: View>: ViewModifier {
                     LiftPlace.Frames(global: g.frame(in: .global), row: g.frame(in: .named(MessageMenu.row)))
                 } action: { place.frames = $0 }
                 .gesture(LongPressAt(changed: menu.pressChanged) { p in
+                    #if DEBUG
+                    LiftTrace.start("press part=\(part.map(String.init) ?? "-")")
+                    #endif
                     Haptics.tap()
                     menu.anchor = p
                     capturing = true
                 })
                 // The screenshot switches (`showMenu`, `showRewind`) pick a message without a press.
-                .onChange(of: menu.selected == id) { _, on in if on, menu.lift?.bar.id != id { capturing = true } }
+                .onChange(of: menu.selected == id) { _, on in
+                    if on, menu.lift?.bar.id != id {
+                        #if DEBUG
+                        if part ?? 0 == 0 { LiftTrace.start("menu") }
+                        #endif
+                        capturing = true
+                    }
+                }
                 .background {
                     if capturing {
                         EnvironmentCapture { env in
@@ -364,6 +377,9 @@ private struct MessageLongPress<P: View>: ViewModifier {
         #endif
         // All of a message drawn in parts is as tall as it takes, at the part's width.
         let offer = part != nil ? place.offer.map { ProposedViewSize(width: $0.width, height: nil) } : place.offer
+        #if DEBUG
+        LiftTrace.note("lift part=\(part.map(String.init) ?? "-")")
+        #endif
         withAnimation(Theme.Motion.state) {
             menu.selected = id
             menu.lift = MessageLift(bar: bar, frame: f.global, press: press, preview: AnyView(shown), card: card,
