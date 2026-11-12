@@ -660,6 +660,32 @@ final class MessageLiftUITests: XCTestCase {
         }
     }
 
+    /// The edit menu's items page by page, going on with its last button (›) until a page repeats; written to an
+    /// attachment, `name`. The menu pages at large text sizes, so an item missing from the first page may be on another.
+    @MainActor private func menuPages(_ name: String) -> [[String]] {
+        let copy = menuItem("拷贝")
+        guard copy.waitForExistence(timeout: 3) else { return [] }
+        let band = copy.frame.insetBy(dx: -app.frame.width, dy: 0)
+        var pages: [[String]] = []
+        for _ in 0..<6 {
+            let items = (app.buttons.allElementsBoundByIndex + app.menuItems.allElementsBoundByIndex)
+                .filter { $0.exists && !$0.frame.isEmpty && $0.frame.height < copy.frame.height * 2 // not the backdrop's Close
+                    && band.contains(CGPoint(x: band.midX, y: $0.frame.midY)) && app.frame.intersects($0.frame) }
+                .sorted { $0.frame.minX < $1.frame.minX }
+            let labels = items.map(\.label)
+            if pages.last == labels { break }
+            pages.append(labels)
+            guard let next = items.last, !["引用", "拷贝", "查询", "翻译", "共享…", "全选", "搜索网页"].contains(next.label) else { break }
+            next.tap()
+            usleep(600_000)
+        }
+        let a = XCTAttachment(string: pages.map { $0.joined(separator: " | ") }.joined(separator: "\n"))
+        a.name = "menu-pages-\(name)-\(scheme)"
+        a.lifetime = .keepAlways
+        add(a)
+        return pages
+    }
+
     /// A long press at a point of the lifted copy (in the window): selects the word there in place.
     @MainActor private func pressInLift(_ at: CGPoint) {
         app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: at.x, dy: at.y)).press(forDuration: 0.8)
@@ -683,6 +709,13 @@ final class MessageLiftUITests: XCTestCase {
                 XCTAssertTrue(shows(end), "the pressed line shows")
                 pressInLift(CGPoint(x: end.frame.minX + 12, y: end.frame.maxY - 12))
                 checkTheMenuIsClear("bottom" + tag)
+                // Quote (引用) is the menu's first item; at the largest text size the first page showed 拷贝 first.
+                let pages = menuPages("bottom" + tag)
+                XCTAssertTrue(pages.joined().contains("引用"), "\(tag): 引用 is on a page of the edit menu: \(pages)")
+                if !menuItem("拷贝").isHittable { // paged on: back to a fresh menu
+                    pressInLift(CGPoint(x: end.frame.minX + 12, y: end.frame.maxY - 12))
+                    XCTAssertTrue(menuItem("拷贝").waitForExistence(timeout: 5), "the menu again")
+                }
                 menuItem("拷贝").tap()
                 XCTAssertTrue(app.textViews["lift-text"].waitForNonExistence(timeout: 3), "拷贝 put the answer back")
 
