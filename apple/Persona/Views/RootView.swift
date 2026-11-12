@@ -257,7 +257,6 @@ struct RootView: View {
         #if DEBUG || PERF_SIGNPOST
         let _ = PerfTrace.body("RootTabs")
         #endif
-        @Bindable var model = model
         #if os(iOS)
         // iPad and the open iPhone Duo (RootTabs is iOS's regular width): one sidebar, no tabs (#4206).
         ChatsView()
@@ -266,7 +265,7 @@ struct RootView: View {
             .readsVerticalBarEdge($barEdge)
             .modifier(PadRoutes(router: pad))
         #else
-        TabView(selection: $model.selectedTab) {
+        TabView(selection: Binding(get: { model.selectedTab }, set: { model.selectHomeTab($0) })) {
             AssistantRootTab()
             AgentsRootTab()
             #if os(visionOS)
