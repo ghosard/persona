@@ -219,9 +219,6 @@ private struct LiftTextView: UIViewRepresentable {
 
     func updateUIView(_ v: LiftUITextView, context: Context) {
         let menu = menu
-        #if DEBUG
-        LiftTrace.note("text view update parts=\(segments.compactMap(\.part)) rows=\(segments.reduce(0) { $0 + $1.rows.count })")
-        #endif
         v.place = place
         v.show(text, words, design: UIFontDescriptor.SystemDesign(StyleSpec.current.fontDesign), // the app's, as RootView sets it
                parts: parts)
@@ -294,12 +291,6 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
     /// Its words wait for `start`'s first step, and their lines (`resnap`) for the step after.
     private var wordsHeld = true
     private var snapHeld = false
-    #if DEBUG
-    /// TEMP #5291: all of it at once, as before, for comparing.
-    private static let atOnce = UserDefaults.standard.bool(forKey: "showLiftSelectAtOnce")
-    #else
-    private static let atOnce = false
-    #endif
     private var begun: UUID?
     /// Something is selected: when that goes, the selecting is over.
     private var picked = false
@@ -346,7 +337,6 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
         source = (text, words)
         self.design = design
         self.parts = parts
-        if Self.atOnce { wordsHeld = false }
         if !wordsHeld { render(width: laidOut > 0 ? laidOut : wrapWidth) }
     }
 
@@ -356,22 +346,11 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
         laidOut = width
         textContainer.size = CGSize(width: width, height: .greatestFiniteMagnitude)
         let look = ReplyText.Look(source.words, design: design, traits: traitCollection)
-        #if DEBUG
-        let words: NSAttributedString = LiftTrace.time("reply-text \(source.text.count) chars w=\(Int(width)) tables=\(tables.count)") {
-            switch source.words {
-            case .plain: ReplyText.plain(source.text, look: look)
-            case .reply: ReplyText.attributed(source.text, look: look, width: width, tables: tables, parts: parts)
-            }
-        }
-        let cleared = LiftTrace.time("reply-text clear") { ReplyText.clear(words) }
-        LiftTrace.time("text view set text") { attributedText = cleared }
-        #else
         let words: NSAttributedString = switch source.words {
         case .plain: ReplyText.plain(source.text, look: look)
         case .reply: ReplyText.attributed(source.text, look: look, width: width, tables: tables, parts: parts)
         }
         attributedText = ReplyText.clear(words)
-        #endif
         partRanges = [:]
         if !parts.isEmpty {
             storage.enumerateAttribute(.replyPart, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
@@ -556,11 +535,7 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
         if keepsAllLaidOut() { snapPending = true }
         if snapPending, !snapHeld {
             snapPending = false
-            #if DEBUG
-            LiftTrace.time("resnap parts=\(segments.compactMap(\.part)) rows=\(segments.reduce(0) { $0 + $1.rows.count })") { resnap() }
-            #else
             resnap()
-            #endif
         }
         super.layoutSubviews()
         if keepsAllLaidOut() {
@@ -577,9 +552,6 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
         guard laidOut > 0, textContainer.size.height < .greatestFiniteMagnitude / 2 || abs(textContainer.size.width - laidOut) > 0.5 else {
             return false
         }
-        #if DEBUG
-        LiftTrace.note("text container was \(textContainer.size), bounds \(bounds.size)")
-        #endif
         textContainer.size = CGSize(width: laidOut, height: .greatestFiniteMagnitude)
         return true
     }
@@ -639,7 +611,6 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
     }
 
     private func start(_ at: CGPoint?, tries: Int) {
-        if Self.atOnce { return startAtOnce(at, tries: tries) }
         var tries = tries
         var range: UITextRange?
         steps.run { [weak self] in
@@ -651,68 +622,26 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
             if wordsHeld { // its words
                 wordsHeld = false
                 snapHeld = true
-                #if DEBUG
-                LiftTrace.time("step: words") { render(width: wrapWidth) }
-                #else
                 render(width: wrapWidth)
-                #endif
                 return true
             }
             if snapHeld { // their lines on the chat's
                 snapHeld = false
                 setNeedsLayout()
-                #if DEBUG
-                LiftTrace.time("step: lines") { layoutIfNeeded() }
-                #else
                 layoutIfNeeded()
-                #endif
                 return true
             }
             guard let picking = range else { // the selection
                 layoutIfNeeded()
                 guard let r = at.flatMap(word(at:)) ?? textRange(from: beginningOfDocument, to: endOfDocument) else { return false }
-                #if DEBUG
-                LiftTrace.time("step: first responder") { _ = becomeFirstResponder() }
-                #else
                 _ = becomeFirstResponder()
-                #endif
                 selectedTextRange = r
                 picked = !r.isEmpty
                 range = r
                 return true
             }
-            #if DEBUG
-            LiftTrace.time("step: menu") { showMenu(for: picking) } // the menu
-            #else
-            showMenu(for: picking)
-            #endif
+            showMenu(for: picking) // the menu
             return false
-        }
-    }
-
-    /// TEMP #5291: as before, for comparing (`atOnce`).
-    private func startAtOnce(_ at: CGPoint?, tries: Int) {
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            guard window != nil, bounds.width > 0 else {
-                if tries > 0 { startAtOnce(at, tries: tries - 1) }
-                return
-            }
-            #if DEBUG
-            LiftTrace.time("start: layout") { layoutIfNeeded() }
-            guard let range = at.flatMap(word(at:)) ?? textRange(from: beginningOfDocument, to: endOfDocument) else { return }
-            LiftTrace.time("start: first responder") { _ = becomeFirstResponder() }
-            LiftTrace.time("start: select") { selectedTextRange = range }
-            picked = !range.isEmpty
-            LiftTrace.time("start: menu") { showMenu(for: range) }
-            #else
-            layoutIfNeeded()
-            guard let range = at.flatMap(word(at:)) ?? textRange(from: beginningOfDocument, to: endOfDocument) else { return }
-            _ = becomeFirstResponder()
-            selectedTextRange = range
-            picked = !range.isEmpty
-            showMenu(for: range)
-            #endif
         }
     }
 
@@ -1391,12 +1320,7 @@ enum ReplyText {
                     room = ReplyText.tableRoom(rows: source.components(separatedBy: "\n").count - 1, look: look, width: width)
                 }
             } else {
-                #if DEBUG
-                let image = LiftTrace.time("table picture \(source.count) chars") { ReplyTable.picture(source, width: width, traits: look.traits) }
-                #else
-                let image = ReplyTable.picture(source, width: width, traits: look.traits)
-                #endif
-                guard let image else {
+                guard let image = ReplyTable.picture(source, width: width, traits: look.traits) else {
                     add(verbatim(copied, look.body), in: blocks.count - 1, lineSpacing: true)
                     return
                 }

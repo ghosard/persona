@@ -43,12 +43,9 @@ final class MessageLiftUITests: XCTestCase {
 
     private func launch(_ chat: String, _ extra: [String] = []) {
         let pair = "persona://pair?url=" + hub.addingPercentEncoding(withAllowedCharacters: .alphanumerics)! + "&token=mock"
-        app.launchArguments = ["-pairURL", pair, "-tab", "dev", "-openSession", chat, "-ui.scheme", scheme] + extra + trace
+        app.launchArguments = ["-pairURL", pair, "-tab", "dev", "-openSession", chat, "-ui.scheme", scheme] + extra
         app.launchPinned()
     }
-
-    /// #5291 diagnosis, temporary: the app's lift trace (`LiftTrace`) with PERSONA_LIFT_TRACE set.
-    private var trace: [String] { ProcessInfo.processInfo.environment["PERSONA_LIFT_TRACE"] != nil ? ["-showLiftTrace", "YES"] : [] }
 
     @MainActor private func shot(_ name: String) {
         let a = XCTAttachment(screenshot: app.screenshot())
@@ -646,7 +643,6 @@ final class MessageLiftUITests: XCTestCase {
         let pair = "persona://pair?url=" + reportHub.addingPercentEncoding(withAllowedCharacters: .alphanumerics)! + "&token=mock"
         app.launchArguments = ["-pairURL", pair, "-tab", "dev", "-openSession", "macbook/a1f3c2d4-0000-4000-8000-000000000090",
                                "-ui.scheme", scheme, "-openChatsFresh", "YES", "-openDraftsFresh", "YES", "-showFrameProbe", "YES"]
-        app.launchArguments += trace
         app.launchPinned()
         acceptIconAlert(timeout: 3)
         let near = "12.3 细节 3"

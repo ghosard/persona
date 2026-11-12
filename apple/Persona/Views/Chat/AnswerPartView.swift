@@ -127,21 +127,6 @@ private struct AnswerPartWords: View {
     }
 }
 
-#if DEBUG
-/// `LiftTrace`: when a lifted part gets its height, and which.
-private struct LiftTracePart: ViewModifier {
-    let n: Int
-
-    func body(content: Content) -> some View {
-        if LiftTrace.on {
-            content.onGeometryChange(for: Int.self) { Int($0.size.height) } action: { LiftTrace.note("part \(n) height \($0)") }
-        } else {
-            content
-        }
-    }
-}
-#endif
-
 /// The lifted copy of a long answer drawn in parts (#5221): all of its parts again, each `Part.gap` under the one
 /// before, as the chat stacks them (so it looks as the answer did whole, `AnswerPartsLookTests`), the pressed part
 /// marked for the lift to put it where it was (`MessageLift.part`). It is a lazy stack: only the parts near the screen
@@ -162,9 +147,6 @@ struct AnswerPartsLift: View {
 
     var body: some View {
         let parts = AnswerPartMemo.parts(item.text ?? "")
-        #if DEBUG
-        let _ = LiftTrace.note("parts body pressed=\(pressed)/\(parts.count) grown=\(grown)")
-        #endif
         if parts.isEmpty { // not in parts after all: the answer as one
             AnswerPartWords(text: RowMemo.assistant(message) { _ in AssistantRowText(item.text ?? "") }, key: message, message: message)
                 .liftPressedPart(true)
@@ -189,16 +171,10 @@ struct AnswerPartsLift: View {
     @ViewBuilder private func words(_ parts: [AnswerParts.Part], _ n: Int) -> some View {
         let key = AnswerPartMemo.key(message, n)
         let text = RowMemo.assistant(key) { _ in AssistantRowText(parts[n].text) }
-        #if DEBUG
-        let _ = LiftTrace.note("part \(n) built chars=\(parts[n].text.count)")
-        #endif
         AnswerPartWords(text: text, key: key, message: message)
             .liftPressedPart(n == pressed)
             .liftPartBox(n)
             .padding(.top, n == 0 ? 0 : parts[n].gap)
-            #if DEBUG
-            .modifier(LiftTracePart(n: n))
-            #endif
     }
 
     /// A part not laid out yet, holding its place: as tall as the pressed part was in the chat for its length.

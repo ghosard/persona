@@ -1,7 +1,4 @@
 import SwiftUI
-#if DEBUG
-import os
-#endif
 
 // MARK: - A pressed message, lifted over the dimmed chat (#603)
 
@@ -132,9 +129,9 @@ nonisolated final class LiftScrolled {
     var idle = true
 }
 
-/// Work for a lifted copy one step a frame (a display link's ticks), so that no frame lays out much of it (#5291):
-/// the parts above the pressed one after the first frame, then the parts to select the words one by one. Steps run
-/// on the main thread; held by the view that runs them (`@State`, nothing stored but nil) and stopped when it goes.
+/// Work for a lifted copy one step a frame (a display link's ticks), so that no frame does much of it (#5291): the
+/// parts above the pressed one after the first frame (`AnswerPartsLift`), and Select Text's steps (`LiftUITextView`).
+/// Steps run on the main thread; held by what runs them and stopped when it goes.
 @MainActor final class LiftFrames {
     #if os(macOS)
     private var link: Timer?
@@ -542,13 +539,6 @@ struct ShownWords: PreferenceKey, Equatable {
     var foldSpans: [ClosedRange<CGFloat>] { folds.sorted { $0.minY < $1.minY }.map { $0.minY...$0.maxY } }
 
     static func measure(_ layouts: Text.LayoutKey.Value, _ geo: GeometryProxy) -> [WordLine] {
-        #if DEBUG
-        if LiftTrace.on { return LiftTrace.time("shown-words \(layouts.count) texts") { measured(layouts, geo) } }
-        #endif
-        return measured(layouts, geo)
-    }
-
-    private static func measured(_ layouts: Text.LayoutKey.Value, _ geo: GeometryProxy) -> [WordLine] {
         var out: [WordLine] = []
         for a in layouts {
             let p = geo[a.origin]
@@ -636,66 +626,6 @@ extension EnvironmentValues {
     /// Set by such a page for its chat (and nothing inside that chat).
     @Entry var messageLiftHost: MessageLiftHost? = nil
 }
-
-#if DEBUG
-/// #5291 diagnosis, temporary (reverted before the PR): with `-showLiftTrace YES`, where a lift's and Select Text's
-/// main-thread time goes, as `lift-trace` notices (milliseconds since the press or the tap), with every frame gap over
-/// 25 ms.
-enum LiftTrace {
-    static let on = UserDefaults.standard.bool(forKey: "showLiftTrace")
-    static var t0 = CACurrentMediaTime()
-    private static let log = Logger(subsystem: "persona", category: "lift-trace")
-
-    static func start(_ what: String) {
-        guard on else { return }
-        t0 = CACurrentMediaTime()
-        note("start \(what)")
-        LiftTraceFrames.shared.run()
-    }
-
-    static func note(_ s: @autoclosure () -> String) {
-        guard on else { return }
-        let ms = String(format: "%7.1f", (CACurrentMediaTime() - t0) * 1000), what = s()
-        log.notice("lift-trace \(ms, privacy: .public) \(what, privacy: .public)")
-    }
-
-    static func time<T>(_ what: @autoclosure () -> String, _ f: () -> T) -> T {
-        guard on else { return f() }
-        let a = CACurrentMediaTime()
-        let out = f()
-        note("\(what()) took \(String(format: "%.1f", (CACurrentMediaTime() - a) * 1000))")
-        return out
-    }
-}
-
-/// Frame gaps for `LiftTrace`, for four seconds after a start.
-final class LiftTraceFrames: NSObject {
-    static let shared = LiftTraceFrames()
-    private var link: CADisplayLink?
-    private var last: CFTimeInterval = 0
-    private var until: CFTimeInterval = 0
-
-    func run() {
-        last = CACurrentMediaTime()
-        until = last + 4
-        guard link == nil else { return }
-        let l = CADisplayLink(target: self, selector: #selector(tick))
-        l.add(to: .main, forMode: .common)
-        link = l
-    }
-
-    @objc private func tick(_ l: CADisplayLink) {
-        let now = CACurrentMediaTime()
-        let gap = (now - last) * 1000
-        last = now
-        if gap > 25 { LiftTrace.note("frame gap \(Int(gap))") }
-        if now > until {
-            l.invalidate()
-            link = nil
-        }
-    }
-}
-#endif
 
 #if DEBUG
 /// For the UI tests (#3188), with `-showLiftLines YES`: where each line of a pressed message's words is drawn in the chat,
@@ -836,9 +766,6 @@ private struct LiftedMessage: View {
         let p = LiftLayout.place(message: message, press: lift.press.y + pad.top + above, bar: bar, bounds: bounds,
                                  margin: Theme.Space.s, gap: Theme.Space.s, trailing: lift.bar.isUser,
                                  part: lift.part != nil ? above : nil, pressInSight: Theme.Size.tapTarget)
-        #if DEBUG
-        let _ = LiftTrace.note("card y=\(Int(p.preview.minY))..\(Int(p.preview.maxY)) offset=\(Int(p.offset)) above=\(Int(above)) height=\(Int(height))")
-        #endif
         ZStack(alignment: .topLeading) {
             #if DEBUG
             if LiftLines.on {
@@ -942,9 +869,6 @@ private struct LiftedMessage: View {
     /// it), the lazy stack keeps what shows itself.
     private func measured(_ v: LiftPressedPart.Mark?) {
         guard let v else { return }
-        #if DEBUG
-        LiftTrace.note("measured top=\(Int(v.top)) window=\(Int(v.window)) placing=\(placing) first=\(partTop == nil)")
-        #endif
         defer { partTop = v.top }
         if partTop == nil {
             placing = true
@@ -968,9 +892,6 @@ private struct LiftedMessage: View {
     /// Moved where `LiftLayout.place` puts the copy, once.
     private func placed(_ offset: CGFloat?) {
         guard let offset else { return }
-        #if DEBUG
-        LiftTrace.note("placed offset=\(Int(offset))")
-        #endif
         scroll.scrollTo(y: offset)
         scrolled.window = pad.top + scrolled.top - offset // where the part shows now, for the parts above to keep it there
         placing = false
