@@ -23,13 +23,15 @@ vi.mock("../../lib/api", async (orig) => ({
 
 // agents waiting on you come from the store; `waiting` puts one there (a fixed array: the selector's result is stable),
 // `storeLoaded` says whether the store's first snapshot is in
-const fakeStore = vi.hoisted(() => ({ waiting: false, storeLoaded: true, list: [{ id: "ix1", machine_id: "m", session_id: "s1", session_title: "改登录页", kind: "question" }] }));
+// `features`, when set, are the hub's features instead of the store's
+const fakeStore = vi.hoisted(() => ({ waiting: false, storeLoaded: true, features: null as string[] | null, list: [{ id: "ix1", machine_id: "m", session_id: "s1", session_title: "改登录页", kind: "question" }] }));
 vi.mock("../../lib/store", async (orig) => {
   const m = await orig<typeof import("../../lib/store")>();
-  return { ...m, useStore: <T,>(sel: (s: ReturnType<typeof m.getState>) => T) => m.useStore((s) => sel({ ...s, loaded: fakeStore.storeLoaded, ...(fakeStore.waiting ? { interactions: fakeStore.list as never } : {}) })) };
+  return { ...m, useStore: <T,>(sel: (s: ReturnType<typeof m.getState>) => T) => m.useStore((s) => sel({ ...s, loaded: fakeStore.storeLoaded, ...(fakeStore.waiting ? { interactions: fakeStore.list as never } : {}), ...(fakeStore.features ? { features: fakeStore.features } : {}) })) };
 });
 
 import { InboxList } from "./InboxList";
+import { t } from "../../i18n";
 import { resetInboxForTests } from "../../lib/inbox";
 import { resetMailForTests } from "../../lib/mail";
 
@@ -53,6 +55,35 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   host.remove();
+  fakeStore.features = null;
+});
+
+describe("the ⋯ menu's Inbox handling (#4524)", () => {
+  const menu = async () => {
+    act(() => root.render(<InboxList />));
+    await flush();
+    act(() => (host.querySelector(`button[aria-label="${t("inbox-inboxlist.more")}"]`) as HTMLButtonElement).click());
+    return [...document.body.querySelectorAll('[role="menuitem"]')].map((el) => el.textContent?.trim() ?? "");
+  };
+  const label = t("inbox-handling-settings.menu");
+
+  it("comes after Rules and Folders and before the Inbox's sources, from a hub with inbox_settings", async () => {
+    fail = false;
+    fakeStore.features = ["source_subscriptions", "inbox_sources", "inbox_settings"];
+    const rows = await menu();
+    const at = (text: string) => rows.findIndex((r) => r.startsWith(text));
+    expect(at(label)).toBeGreaterThan(at(t("inbox-inboxlist.rules_list")));
+    expect(at(label)).toBe(at(t("inbox-folders.settings_menu")) + 1);
+    expect(at(t("inbox-inboxlist.sources"))).toBe(at(label) + 1);
+  });
+
+  it("is not offered by a hub without inbox_settings, which has no such settings", async () => {
+    fail = false;
+    fakeStore.features = ["source_subscriptions", "inbox_sources"];
+    const rows = await menu();
+    expect(rows.some((r) => r.startsWith(t("inbox-inboxlist.rules_list")))).toBe(true);
+    expect(rows.some((r) => r.startsWith(label))).toBe(false);
+  });
 });
 
 describe("收件箱：列表不会横向滚动", () => {

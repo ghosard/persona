@@ -159,8 +159,8 @@ try {
       await shot(page, `settings-triage-${size}-${theme}`);
       const tasks = page.getByRole("switch", { name: "Follow up every agent Persona starts" });
       await tasks.waitFor({ state: "visible", timeout: 15000 }).catch(() => fail(`${where}: no agent tasks switch`));
-      await page.getByRole("switch", { name: "Tell supervisors about new messages" }).waitFor({ state: "visible", timeout: 15000 })
-        .catch(() => fail(`${where}: no inbox signals switch`));
+      // forwarding new Inbox messages to a task moved to the Inbox's own settings (#4524, e2e/inbox-handling-settings.mjs)
+      if (await page.getByRole("switch", { name: "Tell supervisors about new messages" }).count()) fail(`${where}: the old inbox signals switch is still here`);
       await tasks.scrollIntoViewIfNeeded();
       await shot(page, `settings-assistant-${size}-${theme}`);
       ok(`${where}: the closeout switch and the agent follow-up settings are in Settings`);
