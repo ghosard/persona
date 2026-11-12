@@ -22,13 +22,14 @@ work. An agent writing "done" in its reply does not finish anything; its turn en
 
 | Section | Shown | What it holds |
 | :--- | :--- | :--- |
-| Waiting on you | open | Something only the owner can move: an answer, an approval, a decision, a retry |
+| Waiting for you | open | Something only the owner can move: an answer, an approval, a decision, a retry |
 | Working | open | An agent is running on it now |
-| Just finished | open | Worth a look: closed, accepted or deployed in the last 24 hours, or a turn nobody has seen / a review not done yet (those stay until seen or reviewed) |
+| Delivered · awaiting review | open | Worth a look: an unaccepted delivery, unseen turn, pending review or done / please-verify ask. An unaccepted `live` delivery stays here and open indefinitely; it never ages into Done or Shelved |
 | PR to merge | open | Its work stopped at a pull request that is still open and nothing runs: however old, it stays here, with the PR link and how long since it moved |
 | Other open | folded | Open, recently active, none of the above (an agent stopped and seen, a reminder of the user's own) |
 | Shelved | folded | No activity for 48 hours and nothing running (see "Shelving") |
-| Done | folded | Closed, accepted or deployed more than 24 hours ago |
+| Done | folded | Non-cancelled closed or accepted work, however recently it closed |
+| Cancelled | folded | Cancelled work, with its cancellation reason; never counted as Done |
 
 ## Decision table
 
@@ -36,30 +37,31 @@ The first rule that holds wins.
 
 | # | Rule | Condition | Section |
 | :--- | :--- | :--- | :--- |
-| 1 | `failed_start` | The task's agent never started (`start_error`) | Waiting on you; Done once 48 hours passed |
-| 1a | `superseded` | Rule 1, and its row (see "Related to-dos") has a to-do that really finished: closed without a start error (#3713) | Just finished for 24 hours, then Done; behind that to-do in the row, never leading it |
-| 2 | `agent_asks` | An agent waits on the owner (question, approval, plan) or was cut off by a model error | Waiting on you |
-| 3 | `owner_decides` | Open, and the review says `needs_user`, or its ask is a decision or "cannot be done" | Waiting on you |
+| 0 | `cancelled` | The API cancellation projection or a legacy cancelled supervision state | Cancelled, with its reason; this wins over closed, accepted and agent states |
+| 1 | `failed_start` | The task's agent never started (`start_error`) | Waiting for you; Done once 48 hours passed |
+| 1a | `superseded` | Rule 1, and its row (see "Related to-dos") has a to-do that really finished: closed without a start error (#3713) | Done, behind that to-do in the row, never leading it |
+| 2 | `agent_asks` | An agent waits on the owner (question, approval, plan) or was cut off by a model error | Waiting for you |
+| 3 | `owner_decides` | Open, and the review says `needs_user`, or its ask is a decision or "cannot be done" | Waiting for you |
 | 4 | `agent_running` | An agent is working or starting | Working |
-| 5 | `closed` | `done_at` is set | Just finished for 24 hours, then Done |
-| 6 | `accepted` | The latest review accepted it and no review came since, even when the hub reopened it (see "Accepted tasks") | Just finished for 24 hours after the review, then Done |
-| 7 | `deployed` | `delivery.state` is `live` | Just finished for 24 hours, then Done |
-| 8 | `finished_unseen` | An agent finished a turn nobody has seen, the review is pending, or its ask says done / please verify | Just finished |
+| 5 | `closed` | `done_at` is set | Done; explicit completion is never awaiting review |
+| 6 | `accepted` | The latest review accepted it and no review came since, even when the hub reopened it (see "Accepted tasks") | Done; acceptance is never awaiting review |
+| 7 | `finished_unseen` | `delivery.state` is `live`, but the task has not been accepted | Delivered · awaiting review, open until main-chat acceptance or explicit user completion; no 24-hour or 48-hour timeout |
+| 8 | `finished_unseen` | An agent finished a turn nobody has seen, the review is pending, or its ask says done / please verify | Delivered · awaiting review |
 | 9 | `pr_open` | Its PR is open (rule "PR / delivery" above); a `pr_url` whose stage is Merge or later is a merged PR, never this (#3205) | PR to merge |
 | 10 | `stale` | Shelvable (see "Shelving") and no activity for 48 hours | Shelved |
 | 11 | `rest` | Anything else | Other open |
 
 **A failed start whose work got done another way is not the owner's**: the hub closes a to-do whose agent never started
-(`done_at` with its `start_error`), and rule 1 keeps it in Waiting on you so the owner can retry or remove it. When the
+(`done_at` with its `start_error`), and rule 1 keeps it in Waiting for you so the owner can retry or remove it. When the
 same piece of work finished in a related to-do (the same plan, PR, issue or title: its row), there is nothing left to
 retry: rule 1a files it with that work and it counts as closed, on the page, the sidebar's badge and the assistant's
 entries alike (`supersededFailedStarts` in each copy). A failed start that still waits on the owner reads as one on every
 client: not ticked or struck through, why it did not start in red, and its checkbox closes it for good (`"done": true`
 on it clears `start_error`: the owner closed it; `docs/assistant/todos.md`, API overview).
 
-**Waiting on you is only for what the owner must do in person**: answer a question, grant a permission, decide on a
+**Waiting for you is only for what the owner must do in person**: answer a question, grant a permission, decide on a
 large feature. A deployed to-do's "Please verify" ask and a "done" conclusion are not: the supervising assistant
-checks and accepts them by default, so they sit in Just finished (rule 8), their one-tap button still there for the
+checks and accepts them by default, so they sit in Delivered · awaiting review (rule 8), their one-tap button still there for the
 owner who wants to accept it themselves.
 
 A merged but not deployed delivery (`merged`, `off`) has no section of its own: the row says where it is held and
@@ -86,7 +88,7 @@ who can unhold it, and the to-do falls under rules 10 and 11.
 
 An open to-do that names a PR and says nothing past it (no delivery, `none` or `pr`; stage before Deploy), whatever
 told it, is looked at the same way by that sweep: its PR merged and in the running hub makes it deployed (`live`:
-Just finished), merged and not in it "merged, not deployed" with the watch above; an open PR stays a PR to merge. Such a
+Delivered · awaiting review), merged and not in it "merged, not deployed" with the watch above; an open PR stays a PR to merge. Such a
 to-do is asked about again only when the hub's commit changes, or every 10 minutes while its PR is open. It gets no
 "Please verify": no turn said it was deployed.
 
@@ -133,18 +135,20 @@ to-do with priority `high`, still asks the owner with the card, as before.
 
 ## Header count
 
-The web's header reads "N open · N shelved · N done" beside the title on wider screens (a phone leaves it out); it counts what the list's filter shows, whatever is searched (#3740). The iOS and
+The web's header reads "N open · N shelved · N done · N cancelled" beside the title on wider screens (a phone leaves it out); it counts what the list's filter shows, whatever is searched (#3740). The iOS and
 Android lists have no such line (#3712): it said again what the sections say, so each section's title carries the number of
 to-dos its rows list (a merged row's related ones too), in the section's state color, and the counts follow a search and the
-list's filter (#3740). **Open** counts to-dos that are not closed, not accepted or deployed,
-and not shelved: Waiting on you, Working, PR to merge, Other open, and Just finished rows still open (a finished turn
-is not a closed to-do; only a review or the user closes it). **Done** counts closed, accepted and deployed ones. The
-sidebar's To-dos badge shows the same open count without quiet tasks (#1731), as before; the page lists and counts them. A task whose agent never started (rule 1) counts as open while it waits on the owner.
+list's filter (#3740). **Open** counts to-dos that are not closed, not accepted and not shelved: Waiting for you, Working,
+PR to merge, Other open, and every unaccepted Delivered · awaiting review row, including `live` (a finished turn or delivery
+is not acceptance; only a review or the user closes it). **Done** counts non-cancelled closed and accepted ones; **Cancelled**
+is a separate count. The sidebar's To-dos badge shows the same open count without quiet tasks (#1731), as before; the page
+lists and counts them. A task whose agent never started (rule 1) counts as open while it waits on the owner.
 
 ## Shelving
 
 A to-do is shelvable when it is a task (an agent was ever linked, or a conversation handed it out) and has no due date
-ahead. The user's own to-dos without agents (reminders, errands) and ones due later never shelve themselves.
+ahead. The user's own to-dos without agents (reminders, errands), ones due later, and unaccepted `live` deliveries never
+shelve themselves. The last case remains open under Delivered · awaiting review until it is accepted or explicitly closed.
 
 - Shelved to-dos are folded under **Shelved**, not counted as open, and not changed on the hub: nothing is deleted, closed
   or released. Any new activity (an agent working, a report, a review, an edit) takes it out again at once.
@@ -162,7 +166,8 @@ activity); "N related" under the row opens the others. Two to-dos are related wh
 - the same title once case, spaces and punctuation are dropped (six characters or more);
 - the same plan (`plan_id`: tasks one request was split into).
 
-Relations chain (A shares a PR with B, B an issue with C: one row). A closed to-do never joins an open one's row.
+Relations chain (A shares a PR with B, B an issue with C: one row). Open, completed and cancelled to-dos use three
+separate sides: none joins a row of another state, and a cancelled task never makes a related failed start look completed.
 
 ## Accepted tasks
 
@@ -174,9 +179,8 @@ with a clock and counted them ("5/8").
 
 The acceptance now stands until a newer review replaces it (`acceptanceStands` in `web/src/lib/supervision.ts`):
 
-- with nothing of it running or asking, the task reads **Accepted** in the row and the detail, and sits in Just finished
-  or Done (rule 6);
-- with its agent working or asking again, it is in Working or Waiting on you like any task, its badge still Accepted;
+- with nothing of it running or asking, the task reads **Accepted** in the row and the detail, and sits in Done (rule 6);
+- with its agent working or asking again, it is in Working or Waiting for you like any task, its badge still Accepted;
 - criteria no review judged after the acceptance are marked "not checked" (a dash, not a clock), and the count only
   covers judged ones ("5/5"). The next review, if the supervisor runs one, judges them as usual.
 
@@ -188,13 +192,14 @@ Every client follows this document with its own copy of the rules, each with the
 
 | Client | Rules | Tests | Page |
 | :--- | :--- | :--- | :--- |
-| Web | `web/src/lib/todo-triage.ts` | `web/src/lib/todo-triage.test.ts` | `web/src/views/Todos.tsx` |
-| iOS / Mac | `apple/Shared/TodoTriage.swift` (`TodoTriageLogic`) | `apple/PersonaTests/TodoTriageTests.swift` | `apple/Persona/Views/Todos/TodosView.swift`, `apple/Mac/Todos/MacTodosPage.swift` |
-| Android | `android/core/domain/src/main/kotlin/persona/core/domain/tasks/TodoTriage.kt` | `android/core/domain/src/test/kotlin/persona/core/domain/tasks/TodoTriageTest.kt` | `android/feature/agents/src/main/kotlin/persona/feature/agents/TodosScreen.kt` |
+| Web | `web/src/lib/todo-triage.ts` | `web/src/lib/todo-triage.test.ts`, `web/src/lib/todo-triage-fixture.test.ts` | `web/src/views/Todos.tsx` |
+| iOS / Mac | `apple/Shared/TodoTriage.swift` (`TodoTriageLogic`) | `apple/PersonaTests/TodoTriageTests.swift`, `apple/PersonaTests/TodoTriageFixtureTests.swift` | `apple/Persona/Views/Todos/TodosView.swift`, `apple/Mac/Todos/MacTodosPage.swift` |
+| Android | `android/core/domain/src/main/kotlin/persona/core/domain/tasks/TodoTriage.kt` | `android/core/domain/src/test/kotlin/persona/core/domain/tasks/TodoTriageTest.kt`, `TodoTriageFixtureTest.kt` | `android/feature/agents/src/main/kotlin/persona/feature/agents/TodosScreen.kt` |
 | Hub | `server/internal/assistant/todo_triage.go` | `server/internal/assistant/todo_triage_test.go` | none: it tells when a leader's task is stuck (#3483) |
 
-The shared cases in `spec/fixtures/triage` are read by the web app (`web/src/lib/todo-triage-fixture.test.ts`) and the
-hub; a rule change adds or changes a case there first.
+The shared cases in `spec/fixtures/triage` are read by all four implementations: the web app, Apple and Android fixture
+suites, and the hub. A rule change adds or changes a case there first; copying its expected value into a client-only test
+is not a substitute for replaying the fixture.
 
 A change to the rules changes all of them in the same PR. Native differences: iOS / Mac keep restores in the device's
 `UserDefaults` (`todos.restored`) and Android in its local preferences, as the web keeps them per browser; the iOS list
