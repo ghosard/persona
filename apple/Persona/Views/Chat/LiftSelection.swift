@@ -364,15 +364,17 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
         case .plain: ReplyText.plain(source.text, look: look)
         case .reply: ReplyText.attributed(source.text, look: look, width: width, tables: tables, parts: parts)
         }
-        attributedText = ReplyText.clear(words)
+        let shown = ReplyText.clear(words)
         partRanges = [:]
         if !parts.isEmpty {
-            storage.enumerateAttribute(.replyPart, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+            shown.enumerateAttribute(.replyPart, in: NSRange(location: 0, length: shown.length)) { value, range, _ in
                 guard let n = value as? Int else { return }
                 partRanges[n] = partRanges[n].map { NSUnionRange($0, range) } ?? range
             }
         }
-        followChat() // before anything lays them out
+        // Before anything lays them out: setting a text view's text may lay it out then and there.
+        followChat(in: shown)
+        attributedText = shown
         snapSoon()
         #if DEBUG
         setNeedsLayout() // `LiftLines`
@@ -440,9 +442,9 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
         snapper.hidden = []
         snapper.shifts = [:]
         let split = !parts.isEmpty
-        // A line TextKit 1 laid out (and measured) once and now breaks elsewhere keeps a stale end, its last glyph's box
-        // at the line's right edge, zero wide. Invalidating only those lines' glyphs leaves it; invalidating all of them
-        // clears it, in no more time than the layout takes (docs/lessons/ios.md).
+        // A line TextKit 1 laid out once and now breaks elsewhere can keep a stale end, its last glyph's box at the
+        // line's right edge, zero wide (docs/lessons/ios.md): when the chat's lines come after a layout, all of the
+        // glyphs are made again, in no more time than the layout takes.
         if followChat() {
             layout.invalidateGlyphs(forCharacterRange: all, changeInLength: 0, actualCharacterRange: nil)
         }
@@ -498,12 +500,13 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
         setNeedsDisplay()
     }
 
-    /// Where its lines break, as the chat's do (`LiftLayout.follow`), in all of the words or in each part laid out: set
-    /// before its words are first laid out (`render`). true: they changed.
-    @discardableResult private func followChat() -> Bool {
-        let all = NSRange(location: 0, length: storage.length)
+    /// Where its lines break, as the chat's do (`LiftLayout.follow`), in all of the words (`text`, by default its own)
+    /// or in each part laid out: set before its words are first laid out (`render`). true: they changed.
+    @discardableResult private func followChat(in text: NSAttributedString? = nil) -> Bool {
+        let text = text ?? storage
+        let all = NSRange(location: 0, length: text.length)
         let split = !parts.isEmpty
-        let paragraphs = wrapping
+        let paragraphs = Self.wrapping(in: text)
         var held = IndexSet(), breaks = IndexSet()
         func range(of s: LiftSegment) -> NSRange? {
             guard let p = s.part else { return all }
@@ -533,17 +536,17 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
         return past > 0.5 && past <= size * 0.6 ? -past : nil
     }
 
-    /// Its paragraphs that wrap as words, a list item's past its marker: not a code block's lines (which do not
-    /// wrap), a table's picture or a rule.
-    private var wrapping: [NSRange] {
-        let text = storage.string as NSString
+    /// The paragraphs of `words` that wrap as words, a list item's past its marker: not a code block's lines (which do
+    /// not wrap), a table's picture or a rule.
+    private static func wrapping(in words: NSAttributedString) -> [NSRange] {
+        let text = words.string as NSString
         var out: [NSRange] = []
         text.enumerateSubstrings(in: NSRange(location: 0, length: text.length), options: [.byParagraphs, .substringNotRequired]) { _, r, _, _ in
             guard r.length > 0 else { return }
-            if let b = self.storage.attribute(.replyBlock, at: r.location, effectiveRange: nil) as? ReplyBlock, b.kind != .quote { return }
+            if let b = words.attribute(.replyBlock, at: r.location, effectiveRange: nil) as? ReplyBlock, b.kind != .quote { return }
             if text.range(of: "\u{FFFC}", range: r).location != NSNotFound { return }
             var marker = NSRange()
-            if self.storage.attribute(.replyMarker, at: r.location, longestEffectiveRange: &marker, in: r) != nil {
+            if words.attribute(.replyMarker, at: r.location, longestEffectiveRange: &marker, in: r) != nil {
                 if NSMaxRange(marker) < NSMaxRange(r) { out.append(NSRange(location: NSMaxRange(marker), length: NSMaxRange(r) - NSMaxRange(marker))) }
             } else {
                 out.append(r)

@@ -20,15 +20,15 @@ Pitfalls, odd behavior and the decisions made at the time (formerly "Lessons" in
   menu one frame after that, so the costs don't add up in one frame.
 - To see what fills a long main-thread block, read the watchdog's backtraces in the frame report the UI test
   attaches. They show which step of the frame the block was in before you add any tracing.
-- TextKit 1 keeps a stale end for a line it laid out and measured once and then breaks elsewhere (here: wrapped on
-  its own, then where the chat's lines break, through `shouldBreakLineByWordBeforeCharacterAt`). After
-  `invalidateLayout` the glyphs are drawn in the right places, but `boundingRect(forGlyphRange:)` of the line's new last
-  glyph is a zero-wide box at the line's right edge. It happens only when a `boundingRect` call on the old layout
-  came first (a debug line report, or anything in UIKit that measures). Invalidating the glyphs of the changed
-  paragraphs, or of everything up to their end, keeps the stale box; invalidating all glyphs clears it, and on 4,500
-  characters it costs no more than the relayout. Set the breaks before anything lays the words out, and invalidate all
-  glyphs when they change later (`LiftUITextView.resnap`). Reproduce it in a macOS script with the same TextKit 1
-  stack before queuing a simulator run.
+- TextKit 1 can keep a stale end for a line it laid out once and then breaks elsewhere (here: wrapped on its own,
+  then where the chat's lines break, through `shouldBreakLineByWordBeforeCharacterAt`). The glyphs are drawn in the
+  right places, but `boundingRect(forGlyphRange:)` of the line's new last glyph is a zero-wide box at the line's right
+  edge. Set the breaks before anything lays the words out, and remember that setting a `UITextView`'s
+  `attributedText` can lay it out then and there: work the breaks out from the new string and set them before
+  assigning it (`LiftUITextView.render`). When the breaks still change after a layout, invalidate all of the glyphs
+  (`resnap`); it costs no more than the relayout. On macOS the stale box appears only after something measured the
+  old layout, and only invalidating every glyph clears it. A command-line repro built with `swiftc` for the iOS
+  simulator and run with `simctl spawn` did not show it there, so check the fix in the app.
 - A selection handle's knob hangs past the selected lines: over the first, under the last. When a text view is
   exactly as large as its words inside a SwiftUI view, a touch on the knob lands outside it and the handle can't be
   dragged. Make the text view reach past the words (`Theme.Lift.handleReach`), with a matching
