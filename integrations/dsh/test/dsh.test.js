@@ -2,7 +2,7 @@ import { mcpToolNames } from '../../runtime-sdk/lib/compat.js'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { startFakeNode, until } from '../../runtime-sdk/testing/fake-node.js'
-import { createDshRuntime } from '../lib/dsh.js'
+import { createDshRuntime, launchersOfDshModels, parseDshModels, resolveDshModel } from '../lib/dsh.js'
 
 /** A Cordis-like event bus: emit for emit events, waterfall for the answerer chains (registration order, prepend first). */
 function bus() {
@@ -582,6 +582,26 @@ test('the assistant\'s own tools are only for its conversations, called as the a
   assert.deepEqual(n.toolCalls.at(-1), { name: 'ask_user', args: {}, session_id: 'session-asst', assistant: true })
   await registered.get('mcp__persona__phone_contacts').def.execute({}, { agent: { session: { id: 'session-other' } } })
   assert.equal(n.toolCalls.at(-1).assistant, undefined)
+})
+
+test('normalizes configured model shapes and resolves provider aliases', () => {
+  const models = parseDshModels({
+    deepseek: [{ id: 'chat', name: 'DeepSeek Chat', default: true }],
+    anthropic: { label: 'Claude', models: [{ name: 'Opus' }] },
+  })
+  assert.deepEqual(models, [
+    { provider: 'deepseek', providerName: 'deepseek', id: 'chat', name: 'DeepSeek Chat', default: true },
+    { provider: 'anthropic', providerName: 'Claude', id: 'Opus', name: 'Opus', default: false },
+  ])
+  assert.deepEqual(resolveDshModel('Claude:Opus', 'dsh', models), { provider: 'anthropic', model: 'Opus' })
+  assert.deepEqual(resolveDshModel('DeepSeek Chat', 'deepseek', models), { provider: 'deepseek', model: 'chat' })
+  assert.equal(resolveDshModel('missing', 'dsh', models), undefined)
+  const launchers = launchersOfDshModels(models)
+  assert.deepEqual(launchers.map((l) => l.name), ['dsh', 'deepseek', 'anthropic'])
+  assert.deepEqual(launchers[0].models, models.map(({ providerName, ...m }) => m))
+  assert.equal(launchers[0].model, 'DeepSeek Chat')
+  assert.equal(launchers[2].model, 'Opus')
+  assert.deepEqual(resolveDshModel('anthropic/Opus', undefined, []), { provider: 'anthropic', model: 'Opus' })
 })
 
 test('advertises DSH configured models as launchers in hello and launchers.models (#5572)', async (t) => {

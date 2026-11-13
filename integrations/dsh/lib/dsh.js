@@ -56,113 +56,40 @@ const MAX_SUBAGENTS = 20 // a session's subagents listed: every running one, the
 const LEARN_EVERY = 5 * 60_000 // ms: read a parent's subagent catalog again at most this often (labels, tool calls)
 const STARTED_SUBAGENT = /^started subagent (\S+)/ // DSH's subagent tool result: the child it started
 
-/**
- * Parse DSH models from configured or runtime services.
- * Accepts arrays of provider groups, flat model lists, or maps of providers.
- */
+/** Normalize DSH model groups, flat model lists and provider maps. */
 export function parseDshModels(raw) {
   const list = []
-  if (!raw) return list
-  const items = Array.isArray(raw)
-    ? raw
-    : typeof raw === 'object'
-      ? Object.entries(raw).map(([k, v]) => (Array.isArray(v) ? { provider: k, models: v } : { provider: k, ...v }))
-      : []
-  for (const item of items) {
-    if (!item) continue
-    if (Array.isArray(item.models)) {
-      const provider = String(item.provider ?? item.id ?? item.name ?? 'dsh')
-      const providerName = String(item.name ?? item.label ?? provider)
-      for (const m of item.models) {
-        if (!m || (!m.id && !m.name)) continue
-        list.push({
-          provider,
-          providerName,
-          id: String(m.id ?? m.name),
-          name: String(m.name ?? m.id),
-          default: m.default === true,
-        })
-      }
-    } else if (item.id || item.name) {
-      const provider = String(item.provider ?? item.group ?? 'dsh')
-      const providerName = String(item.providerName ?? item.groupName ?? provider)
-      list.push({
-        provider,
-        providerName,
-        id: String(item.id ?? item.name),
-        name: String(item.name ?? item.id),
-        default: item.default === true,
-      })
-    }
+  const push = (m, group = {}) => {
+    if (!m?.id && !m?.name) return
+    const provider = String(group.provider ?? group.id ?? group.name ?? m.provider ?? m.group ?? 'dsh')
+    list.push({ provider, providerName: String(m.providerName ?? m.groupName ?? group.name ?? group.label ?? provider),
+      id: String(m.id ?? m.name), name: String(m.name ?? m.id), default: m.default === true })
+  }
+  for (const item of Array.isArray(raw) ? raw : raw && typeof raw === 'object'
+    ? Object.entries(raw).map(([provider, v]) => ({ provider, ...(Array.isArray(v) ? { models: v } : v) })) : []) {
+    if (Array.isArray(item?.models)) for (const m of item.models) push(m, item)
+    else if (item) push(item)
   }
   return list
 }
 
-/**
- * Build Persona launchers from parsed DSH models.
- * Generates:
- * 1. Main launcher (e.g. 'dsh') with all models carrying provider group information.
- * 2. Dedicated launchers per provider group (e.g. 'anthropic', 'deepseek').
- */
-export function launchersOfDshModels(parsedModels, defaultLauncher = 'dsh', agent = 'dsh') {
-  if (!parsedModels || parsedModels.length === 0) return []
-  const byProvider = new Map()
-  for (const m of parsedModels) {
-    let arr = byProvider.get(m.provider)
-    if (!arr) {
-      arr = []
-      byProvider.set(m.provider, arr)
-    }
-    arr.push(m)
-  }
-
-  const defaultEntry = parsedModels.find((m) => m.default) ?? parsedModels[0]
-  const mainLauncher = {
-    name: defaultLauncher,
-    agent,
-    model: defaultEntry?.name || defaultEntry?.id,
-    models: parsedModels.map((m) => ({
-      id: m.id,
-      name: m.name,
-      provider: m.provider,
-      default: m.default === true,
-    })),
-  }
-
-  const result = [mainLauncher]
-
-  for (const [provider, models] of byProvider) {
-    if (provider !== defaultLauncher) {
-      const def = models.find((m) => m.default) ?? models[0]
-      result.push({
-        name: provider,
-        agent,
-        model: def?.name || def?.id,
-        models: models.map((m) => ({
-          id: m.id,
-          name: m.name,
-          provider: m.provider,
-          default: m.default === true,
-        })),
-      })
-    }
-  }
-
-  return result
+/** One launcher for DSH plus one for each other provider, all sharing the normalized models. */
+export function launchersOfDshModels(models, name = 'dsh', agent = 'dsh') {
+  if (!models.length) return []
+  return [...new Set([name, ...models.map((m) => m.provider)])].map((launcher) => {
+    const group = launcher === name ? models : models.filter((m) => m.provider === launcher)
+    const def = group.find((m) => m.default) ?? group[0]
+    return { name: launcher, agent, model: def.name, models: group.map(({ providerName, ...m }) => m) }
+  })
 }
 
-/**
- * Match a requested model string against parsed DSH models.
- * Handles "provider/model", "provider:model", launcher as provider, or model id/name.
- */
+/** Match provider/model, provider:model, a provider launcher or a model id/name. */
 export function resolveDshModel(modelInput, launcherInput, parsedModels = []) {
   if (!modelInput) return null
   const str = String(modelInput).trim()
   if (!str) return null
-
   let provider
   let model = str
-
   if (str.includes('/')) {
     const slash = str.indexOf('/')
     provider = str.slice(0, slash)
@@ -172,30 +99,18 @@ export function resolveDshModel(modelInput, launcherInput, parsedModels = []) {
     provider = str.slice(0, colon)
     model = str.slice(colon + 1)
   }
-
   if (provider) {
     const found = parsedModels.find((m) => (m.provider === provider || m.providerName === provider) && (m.id === model || m.name === model))
-    if (!found) {
-      if (parsedModels.length > 0) return undefined
-    }
+    if (!found && parsedModels.length > 0) return undefined
     return { provider: found ? found.provider : provider, model: found ? found.id : model }
   }
-
   if (launcherInput && launcherInput !== 'dsh') {
     const found = parsedModels.find((m) => (m.provider === launcherInput || m.providerName === launcherInput) && (m.id === model || m.name === model))
     if (found) return { provider: found.provider, model: found.id }
   }
-
   const matches = parsedModels.filter((m) => m.id === model || m.name === model)
-  if (matches.length === 1) {
-    return { provider: matches[0].provider, model: matches[0].id }
-  }
-  if (matches.length > 1) {
-    const def = matches.find((m) => m.default) ?? matches[0]
-    return { provider: def.provider, model: def.id }
-  }
-
-  return undefined
+  const chosen = matches.find((m) => m.default) ?? matches[0]
+  return chosen && { provider: chosen.provider, model: chosen.id }
 }
 
 /**
@@ -251,23 +166,14 @@ export function createDshRuntime(deps, options = {}) {
   async function readDshModels() {
     let raw
     try {
-      if (typeof deps.models?.list === 'function') {
-        raw = await deps.models.list()
-      } else if (typeof deps.models?.getModels === 'function') {
-        raw = await deps.models.getModels()
-      } else if (typeof deps.models?.getAll === 'function') {
-        raw = await deps.models.getAll()
-      } else if (typeof deps.models === 'function') {
-        raw = await deps.models()
-      } else if (Array.isArray(deps.models) || (deps.models && typeof deps.models === 'object')) {
-        raw = deps.models
-      } else if (typeof deps.controller?.listModels === 'function') {
-        raw = await deps.controller.listModels()
-      } else if (typeof deps.controller?.models === 'function') {
-        raw = await deps.controller.models()
-      } else if (Array.isArray(deps.controller?.models)) {
-        raw = deps.controller.models
+      const service = deps.models ?? deps.controller
+      for (const method of ['list', 'getModels', 'getAll', 'listModels', 'models']) {
+        if (typeof service?.[method] === 'function') {
+          raw = await service[method]()
+          break
+        }
       }
+      raw ??= typeof service === 'function' ? await service() : service
     } catch (err) {
       log(`persona: models: ${err.message}`)
     }
@@ -276,7 +182,12 @@ export function createDshRuntime(deps, options = {}) {
     return cachedModels
   }
 
-  const initialLaunchers = launchersOfDshModels(cachedModels, options.launcher ?? 'dsh', runtimeID === 'dsh' ? 'dsh' : undefined)
+  const launchers = (models) => launchersOfDshModels(models, options.launcher ?? 'dsh', runtimeID === 'dsh' ? 'dsh' : undefined)
+  const refreshLaunchers = (models) => {
+    const list = launchers(models)
+    if (list.length > 0) rt.launchersChanged(list)
+    return list
+  }
 
   async function passToWeb(sessionId, next) {
     const cur = webPending.get(sessionId) ?? 0
@@ -813,9 +724,8 @@ export function createDshRuntime(deps, options = {}) {
     start,
     models: async () => {
       const current = await readDshModels()
-      const launchers = launchersOfDshModels(current, options.launcher ?? 'dsh', runtimeID === 'dsh' ? 'dsh' : undefined)
-      if (launchers.length > 0) rt.launchersChanged(launchers)
-      return { agent: 'dsh', models: current.map((m) => ({ id: m.id, name: m.name, provider: m.provider, default: m.default === true })) }
+      refreshLaunchers(current)
+      return { agent: 'dsh', models: launchers(current)[0]?.models ?? [] }
     },
     rename: (params) => {
       if (splitChild(params.session_id)) throw new RpcError('unsupported: 子 Agent 不能改名', 'unsupported')
@@ -831,7 +741,7 @@ export function createDshRuntime(deps, options = {}) {
     keepAlways: true, // DSH answers allowed-once only: the hub keeps "Always allow in this session" (#3974)
     launcher: options.launcher ?? 'dsh',
     launcherModel: 'DeepSeek Harness',
-    launchers: initialLaunchers.length > 0 ? initialLaunchers : (Array.isArray(options.launchers) ? options.launchers : undefined),
+    launchers: launchers(cachedModels).length > 0 ? launchers(cachedModels) : options.launchers,
     socketPath: options.socketPath,
     answerFirst: options.interactions === 'browser' ? 'local' : options.interactions ?? 'auto',
     log,
@@ -1130,14 +1040,7 @@ export function createDshRuntime(deps, options = {}) {
         tools.timer = setInterval(() => void refreshTools(rt.hubConnected), TOOLS_EVERY)
         tools.timer.unref?.()
       }
-      if (cachedModels.length === 0) {
-        void readDshModels().then((models) => {
-          if (models.length > 0) {
-            const launchers = launchersOfDshModels(models, options.launcher ?? 'dsh', runtimeID === 'dsh' ? 'dsh' : undefined)
-            if (launchers.length > 0) rt.launchersChanged(launchers)
-          }
-        })
-      }
+      if (cachedModels.length === 0) void readDshModels().then(refreshLaunchers)
     },
     stop() {
       for (const d of disposers.splice(0)) {
@@ -1161,12 +1064,7 @@ export function createDshRuntime(deps, options = {}) {
     /** Look at the hub's tools now (tests). */
     refreshTools: () => refreshTools(rt.hubConnected),
     /** Refresh DSH models from configured or runtime services. */
-    refreshModels: async () => {
-      const models = await readDshModels()
-      const launchers = launchersOfDshModels(models, options.launcher ?? 'dsh', runtimeID === 'dsh' ? 'dsh' : undefined)
-      if (launchers.length > 0) rt.launchersChanged(launchers)
-      return launchers
-    },
+    refreshModels: async () => refreshLaunchers(await readDshModels()),
     pushNow: rt.pushNow,
   }
 }
