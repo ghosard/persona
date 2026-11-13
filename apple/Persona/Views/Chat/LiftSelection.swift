@@ -215,7 +215,11 @@ private struct LiftTextView: UIViewRepresentable {
     /// out (`ShownWords.segments`).
     var segments: [LiftSegment]
 
-    func makeUIView(context: Context) -> LiftUITextView { LiftUITextView() }
+    func makeUIView(context: Context) -> LiftUITextView {
+        let v = LiftUITextView()
+        v.holdWords()
+        return v
+    }
 
     func updateUIView(_ v: LiftUITextView, context: Context) {
         let menu = menu
@@ -288,8 +292,8 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
     /// the menu. On a long answer each takes tens of milliseconds, too long together for one frame (#5291); nothing
     /// shows before the selection (the words are clear).
     private let steps = LiftFrames()
-    /// Its words wait for `start`'s first step, and their lines (`resnap`) for the step after.
-    private var wordsHeld = true
+    /// Its words wait for `start`'s first step, and their lines (`resnap`) for the step after (`holdWords`).
+    private var wordsHeld = false
     private var snapHeld = false
     private var begun: UUID?
     /// Something is selected: when that goes, the selecting is over.
@@ -331,6 +335,10 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
     }
 
     required init?(coder: NSCoder) { fatalError("not from a nib") }
+
+    /// Its words wait for Select Text's first step (`start`): the frame it is tapped in does not lay them out. A view
+    /// not held lays them out as they come.
+    func holdWords() { wordsHeld = true }
 
     func show(_ text: String, _ words: LiftWords, design: UIFontDescriptor.SystemDesign = .default, parts: [Int] = []) {
         guard source?.text != text || source?.words != words || self.design != design || self.parts != parts else { return }
