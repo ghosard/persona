@@ -576,6 +576,14 @@ func (c *Client) WorktreeCreate(ctx context.Context, workspace, branch, path str
 	return &res, err
 }
 
+// WorktreeCreateFromCwd is WorktreeCreate from a main checkout that has no open workspace.
+func (c *Client) WorktreeCreateFromCwd(ctx context.Context, cwd, branch, path string) (*WorktreeCreated, error) {
+	var res WorktreeCreated
+	err := c.call(ctx, "worktree.create", map[string]any{"cwd": cwd, "branch": branch, "path": path, "focus": false}, &res,
+		"worktree", "create", "--cwd", cwd, "--branch", branch, "--path", path, "--no-focus")
+	return &res, err
+}
+
 func (c *Client) TabCreate(ctx context.Context, workspace, cwd, label string) (*Created, error) {
 	var res Created
 	err := c.call(ctx, "tab.create", map[string]any{"workspace_id": workspace, "cwd": cwd, "label": label, "focus": false}, &res,

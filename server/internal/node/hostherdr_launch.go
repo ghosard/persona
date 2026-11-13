@@ -120,6 +120,20 @@ func (h *herdrHost) CreateWorktree(ctx context.Context, space, branch, path stri
 	return out, nil
 }
 
+// CreateWorktreeFromCwd creates a worktree from a main checkout that has no open workspace. Like other new workspaces,
+// it opens on the node's own herdr server.
+func (h *herdrHost) CreateWorktreeFromCwd(ctx context.Context, cwd, branch, path string) (*host.Created, error) {
+	c, err := h.c.WorktreeCreateFromCwd(ctx, cwd, branch, path)
+	if err != nil {
+		return nil, err
+	}
+	out := fromHerdrCreated("", &c.Created)
+	if out.SpaceID == "" {
+		return nil, errors.New("herdr did not return the new workspace")
+	}
+	return out, nil
+}
+
 func (h *herdrHost) WorktreesDir(home string) string { return herdr.WorktreesDir(home) }
 
 // worktreeSupport caches whether this herdr has `worktree` (herdr 0.9 on Unix).

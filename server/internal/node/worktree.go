@@ -46,6 +46,7 @@ func worktreeUnsupported(kind string) error {
 // worktreeRepo is the repository a workspace is in.
 type worktreeRepo struct {
 	root, name, branch string
+	mainRoot           string // the main checkout when root is a linked worktree
 }
 
 // repoOfWorkspace finds the repository of a workspace the host lists, and the host that makes its worktrees. Without
@@ -126,7 +127,11 @@ func repoAt(ctx context.Context, dir string) (worktreeRepo, error) {
 			c = filepath.Join(repo.root, c)
 		}
 		if c = filepath.Clean(c); filepath.Base(c) == ".git" {
-			repo.name = filepath.Base(filepath.Dir(c)) // a linked worktree is named for its repository
+			mainRoot := filepath.Dir(c)
+			repo.name = filepath.Base(mainRoot) // a linked worktree is named for its repository
+			if mainRoot != filepath.Clean(repo.root) {
+				repo.mainRoot = mainRoot
+			}
 		} else if c != filepath.Clean(repo.root) {
 			repo.name = strings.TrimSuffix(filepath.Base(c), ".git") // a bare repository
 		}
@@ -262,6 +267,14 @@ func (n *Node) worktreeCreate(ctx context.Context, kind, workspace, cwd, branch,
 	if len(parents) > 0 && parents[0] != "" {
 		parent = parents[0]
 	}
+	sourceWorkspace, sourceCwd := workspace, ""
+	if repo.mainRoot != "" && h.Kind() == host.Herdr {
+		// herdr starts a new worktree from the main checkout's parent workspace, never from a linked checkout.
+		var sourceErr error
+		if sourceWorkspace, sourceErr = spaceHolding(ctx, h, repo.mainRoot); sourceErr != nil {
+			sourceWorkspace, sourceCwd = "", repo.mainRoot
+		}
+	}
 	if parent != workspace {
 		w, ok := h.(interface {
 			CreateWorktreeUnder(context.Context, string, string, string, string) (*host.Created, error)
@@ -271,7 +284,17 @@ func (n *Node) worktreeCreate(ctx context.Context, kind, workspace, cwd, branch,
 		}
 		created, err = w.CreateWorktreeUnder(ctx, workspace, branch, dest, parent)
 	} else if w, ok := h.(host.Worktreer); ok && w.CanWorktree() {
-		created, err = w.CreateWorktree(ctx, workspace, branch, dest)
+		if sourceCwd != "" {
+			cw, ok := h.(interface {
+				CreateWorktreeFromCwd(context.Context, string, string, string) (*host.Created, error)
+			})
+			if !ok {
+				return res, errors.New("This terminal host cannot create a worktree from a directory")
+			}
+			created, err = cw.CreateWorktreeFromCwd(ctx, sourceCwd, branch, dest)
+		} else {
+			created, err = w.CreateWorktree(ctx, sourceWorkspace, branch, dest)
+		}
 	} else {
 		created, err = n.worktreeByGit(ctx, h, repo, branch, dest)
 	}
