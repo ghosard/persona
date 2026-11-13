@@ -280,7 +280,7 @@ func (s *Service) backgroundThere(ctx context.Context, cfg Settings, id string) 
 // gone would only move its work at every signal.
 func (s *Service) backgroundSignedOut(cfg Settings, c proto.Session) bool {
 	at := cfg.BackgroundSupervisorAt
-	return c.TurnErrorCode == proto.TurnErrorNotLoggedIn && c.SessionID == cfg.BackgroundSupervisor && at != nil && at.Before(s.born)
+	return signedOut(c) && c.SessionID == cfg.BackgroundSupervisor && at != nil && at.Before(s.born)
 }
 
 // backgroundFresh: conversation id is the background supervisor, started within backgroundGrace.
