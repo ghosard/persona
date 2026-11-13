@@ -123,6 +123,9 @@ func literalLarkLoopCommands(cmd string, gates []proto.CommandGate) ([]string, b
 			if gated && index+1 < len(bound) && bound[index+1] {
 				return false
 			}
+			if gateOf(gates, name) >= 0 && (index+1 >= len(words) || !strings.EqualFold(words[index+1], "GET") && !strings.EqualFold(words[index+1], "HEAD")) {
+				return false // preserve the existing approval/denial path for explicit writes
+			}
 			resolved = resolved || bound[index]
 			if gated {
 				for _, changed := range bound[index+1:] {
