@@ -2,38 +2,53 @@
 import BeautifulUI
 import SwiftUI
 
-/// `-showButtonContrast YES` (#6157): a secondary `.themedButton()` on every kind of surface one sits on in the app, for
-/// screenshots that measure each label against the button's own fill (`ButtonContrastUITests`).
-/// - On the page: the page itself, the grouped page, a card (`Theme.card`), a floating panel (`.surface`) and a
-///   settings list's row (`SettingsForm`).
-/// - In a sheet, opened with `contrast.openSheet`: the sheet itself, a card in it, a panel in it and a list row in it.
-///   The sheet starts at half height and goes to full height with `contrast.expand`.
+/// `-showButtonContrast YES` (#6157): a secondary `.themedButton()` on every kind of fill one sits on in the app, for
+/// screenshots that measure each label against the button's own fill (`ButtonContrastUITests`). The places:
+/// - The first screen:
+///   - `page`: the page itself.
+///   - `grouped`: the grouped page; bottom bars use it too.
+///   - `card`: `.card()`, the most common card.
+///   - `themeCard`: a `Theme.card` fill.
+///   - `surface`: a floating panel (`.surface`: interaction panels, the tray).
+/// - The second screen, after `contrast.next`:
+///   - `list`: a settings list's row (`SettingsForm`).
+///   - `well`: `Theme.Fill.well`.
+///   - `wash`: the accent at 12 %, as receipts and suggestions use.
+///   - `bar`: the `.bar` material.
+///   - `black`: black and dark whatever the look, as the screen viewer and the image editor are.
+/// - In a sheet, after `contrast.openSheet`: the sheet itself, a panel, `.card()`, `Theme.card` and a list row in it
+///   (Settings is a sheet). It starts at half height and goes to full height with `contrast.expand`.
 ///
 /// Each place has two buttons: one in the accent and one in `Theme.danger`, the two tints call sites give a secondary
 /// button. They are drawn over the app in the saved style, color and look (`-ui.style`, `-ui.color`, `-ui.scheme`), with
 /// RootView's tint and type (`rootLook`), and each one's identifier is `contrast.<place>.<accent|danger>`.
 struct ButtonContrastOverlay: View {
     @State private var shown = UserDefaults.standard.bool(forKey: "showButtonContrast")
+    @State private var second = false
     @State private var sheet = false
 
     var body: some View {
         if shown {
             VStack(alignment: .leading, spacing: Theme.Space.m) {
-                ButtonContrastRow(place: "page")
-                ButtonContrastRow(place: "grouped")
-                    .background(Theme.groupedPage, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
-                ButtonContrastRow(place: "card")
-                    .background(Theme.card, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
-                ButtonContrastRow(place: "surface")
-                    .surface(in: RoundedRectangle(cornerRadius: Theme.Radius.card))
-                SettingsForm {
-                    Section { ButtonContrastRow(place: "list").themedRow() }
+                if second {
+                    ButtonContrastList(place: "list")
+                    ButtonContrastRow(place: "well").background(Theme.Fill.well, in: Self.box)
+                    ButtonContrastRow(place: "wash").background(Theme.accent.opacity(0.12), in: Self.box)
+                    ButtonContrastRow(place: "bar").background(.bar, in: Self.box)
+                    ButtonContrastRow(place: "black").background(Color.black, in: Self.box).environment(\.colorScheme, .dark)
+                } else {
+                    ButtonContrastRow(place: "page")
+                    ButtonContrastRow(place: "grouped").background(Theme.groupedPage, in: Self.box)
+                    ButtonContrastRow(place: "card").card()
+                    ButtonContrastRow(place: "themeCard").background(Theme.card, in: Self.box)
+                    ButtonContrastRow(place: "surface").surface(in: Self.box)
                 }
-                .themedPage()
-                .scrollDisabled(true)
-                .scaledFrame(height: Theme.Size.tapTarget * 3)
-                Button { sheet = true } label: { Text(verbatim: "sheet") }
-                    .accessibilityIdentifier("contrast.openSheet")
+                HStack(spacing: Theme.Space.l) {
+                    Button { second.toggle() } label: { Text(verbatim: "next") }
+                        .accessibilityIdentifier("contrast.next")
+                    Button { sheet = true } label: { Text(verbatim: "sheet") }
+                        .accessibilityIdentifier("contrast.openSheet")
+                }
                 Spacer(minLength: .zero)
             }
             .padding(.horizontal, Theme.Space.page)
@@ -43,25 +58,21 @@ struct ButtonContrastOverlay: View {
             .rootLook()
         }
     }
+
+    static let box = RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
 }
 
-/// The sheet's places, at half height first.
+/// The sheet's places, at half height first: the ones nearest the top are on the screen at both heights.
 private struct ButtonContrastSheet: View {
     @State private var detent: PresentationDetent = .medium
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Space.m) {
             ButtonContrastRow(place: "sheet")
-            ButtonContrastRow(place: "sheetCard")
-                .background(Theme.card, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
-            ButtonContrastRow(place: "sheetSurface")
-                .surface(in: RoundedRectangle(cornerRadius: Theme.Radius.card))
-            SettingsForm {
-                Section { ButtonContrastRow(place: "sheetList").themedRow() }
-            }
-            .themedPage()
-            .scrollDisabled(true)
-            .scaledFrame(height: Theme.Size.tapTarget * 3)
+            ButtonContrastRow(place: "sheetSurface").surface(in: ButtonContrastOverlay.box)
+            ButtonContrastRow(place: "sheetCard").card()
+            ButtonContrastRow(place: "sheetThemeCard").background(Theme.card, in: ButtonContrastOverlay.box)
+            ButtonContrastList(place: "sheetList")
             Button { detent = detent == .large ? .medium : .large } label: { Text(verbatim: "expand") }
                 .accessibilityIdentifier("contrast.expand")
         }
@@ -77,6 +88,20 @@ private extension View {
     /// button's label takes it), the style's font design and BeautifulUI's theme.
     func rootLook() -> some View {
         tint(Theme.accent).fontDesign(AppStyle.current.fontDesign).buiTheme(.persona())
+    }
+}
+
+/// A settings list (`SettingsForm`) with one row.
+private struct ButtonContrastList: View {
+    var place: String
+
+    var body: some View {
+        SettingsForm {
+            Section { ButtonContrastRow(place: place).themedRow() }
+        }
+        .themedPage()
+        .scrollDisabled(true)
+        .scaledFrame(height: Theme.Size.tapTarget * 3)
     }
 }
 

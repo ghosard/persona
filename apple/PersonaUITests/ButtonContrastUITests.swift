@@ -2,7 +2,8 @@ import UIKit
 import XCTest
 
 /// Secondary `.themedButton()`s on every surface (#6157). `-showButtonContrast YES` (ButtonContrastLab.swift) draws one in
-/// the accent and one in `Theme.danger` on each surface a secondary button sits on in the app. This test does it in every
+/// the accent and one in `Theme.danger` on each kind of fill a secondary button sits on in the app: two screens of
+/// places, then a sheet at half and at full height. This test does it in every
 /// style, with three theme colors, in light and dark.
 /// - Each label is measured against the button's own fill in the screenshot, as #6157's `contrast.swift` does: the fill
 ///   is the most common color, the label the 2 % of pixels farthest from it. The glass fill is the system's, not a token
@@ -17,8 +18,9 @@ final class ButtonContrastUITests: XCTestCase {
     private var env: [String: String] { ProcessInfo.processInfo.environment }
     private static let floor = 3.0
     private static let tints = ["accent", "danger"]
-    private static let pagePlaces = ["page", "grouped", "card", "surface", "list"]
-    private static let sheetPlaces = ["sheet", "sheetCard", "sheetSurface", "sheetList"]
+    private static let firstPlaces = ["page", "grouped", "card", "themeCard", "surface"]
+    private static let secondPlaces = ["list", "well", "wash", "bar", "black"]
+    private static let sheetPlaces = ["sheet", "sheetSurface", "sheetCard", "sheetThemeCard", "sheetList"]
 
     @MainActor func testSecondaryButtonsReadOnEverySurface() throws {
         guard let hub = env["PERSONA_MOCK_HUB"] else { throw XCTSkip("needs scripts/mock/mock_hub.py (PERSONA_MOCK_HUB)") }
@@ -52,12 +54,17 @@ final class ButtonContrastUITests: XCTestCase {
                     let opener = app.buttons["contrast.openSheet"]
                     XCTAssertTrue(app.buttons["contrast.page.accent"].waitForExistence(timeout: 20), "\(name): no lab:\n\(app.debugDescription)")
                     sleep(2) // the page settles
-                    measure(app, places: Self.pagePlaces, shot: "\(name)-page", into: &rows, low: &low)
+                    measure(app, places: Self.firstPlaces, shot: "\(name)-page", into: &rows, low: &low)
+                    app.buttons["contrast.next"].tap()
+                    XCTAssertTrue(app.buttons["contrast.list.accent"].waitForExistence(timeout: 10), "\(name): no second screen")
+                    sleep(1)
+                    measure(app, places: Self.secondPlaces, shot: "\(name)-more", into: &rows, low: &low)
 
                     opener.tap()
                     XCTAssertTrue(app.buttons["contrast.sheet.accent"].waitForExistence(timeout: 10), "\(name): no sheet")
                     sleep(2) // the sheet is up
-                    measure(app, places: Self.sheetPlaces, shot: "\(name)-half", suffix: "@half", into: &rows, low: &low)
+                    // At half height the lower places may be below the screen's edge: measured at full height only.
+                    measure(app, places: Self.sheetPlaces, shot: "\(name)-half", suffix: "@half", partly: true, into: &rows, low: &low)
                     app.buttons["contrast.expand"].tap()
                     sleep(2)
                     measure(app, places: Self.sheetPlaces, shot: "\(name)-full", suffix: "@full", into: &rows, low: &low)
@@ -77,7 +84,7 @@ final class ButtonContrastUITests: XCTestCase {
 
     /// One screenshot: every place's buttons that are on screen, each label against its own fill.
     @MainActor private func measure(_ app: XCUIApplication, places: [String], shot: String, suffix: String = "",
-                                    into rows: inout [String], low: inout [String]) {
+                                    partly: Bool = false, into rows: inout [String], low: inout [String]) {
         let screenshot = app.screenshot()
         let window = app.windows.firstMatch.frame
         guard let pixels = Pixels(screenshot.pngRepresentation, pointWidth: window.width) else {
@@ -86,12 +93,13 @@ final class ButtonContrastUITests: XCTestCase {
         if let dir = env["PERSONA_SHOTS"] {
             try? screenshot.pngRepresentation.write(to: URL(fileURLWithPath: "\(dir)/contrast-\(shot).png"))
         }
-        let parts = shot.split(separator: "-").map(String.init) // look, style, color, page|half|full
+        let parts = shot.split(separator: "-").map(String.init) // look, style, color, page|more|half|full
         for place in places {
             for tint in Self.tints {
                 let button = app.buttons["contrast.\(place).\(tint)"]
                 guard button.exists, window.contains(button.frame) else {
-                    XCTFail("\(shot): contrast.\(place).\(tint) is not on the screen"); continue
+                    if !partly { XCTFail("\(shot): contrast.\(place).\(tint) is not on the screen") }
+                    continue
                 }
                 let m = pixels.contrast(in: button.frame)
                 rows.append([parts[0], parts[1], parts[2], place + suffix, tint, m.fill, m.label, String(format: "%.2f", m.ratio)]
