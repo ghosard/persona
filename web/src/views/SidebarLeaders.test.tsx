@@ -117,6 +117,17 @@ describe("the leader conversations in the sidebar", () => {
     expect(headings().join()).not.toMatch(/置顶|其他对话|方向/);
   });
 
+  it("spin the one working mark while any Agent under them runs, even when their own conversation is idle (#6230)", async () => {
+    await renderSidebar();
+    // lead-a's own session is idle but two of its Agents work: the row carries the working arc and the "在做 2" count
+    const leadA = row("lead-a");
+    expect(leadA.textContent).toContain("在做 2");
+    expect(leadA.querySelector('[data-shape="arc"][data-state="working"]')).not.toBeNull();
+    // lead-b has nothing running: no working arc, the quiet pin stays
+    const leadB = row("lead-b");
+    expect(leadB.querySelector('[data-shape="arc"]')).toBeNull();
+  });
+
   it("show their titles on a hub without the leaders list", async () => {
     named = undefined;
     await renderSidebar();

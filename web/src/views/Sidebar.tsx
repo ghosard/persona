@@ -302,7 +302,7 @@ export function Sidebar({ route, onSearch, onNewAgent, onNavigate, workspaceActi
   const go = useGo(onNavigate);
 
   const directionRow = (c: Session) => (
-    <SessionRow key={c.session_id} s={c} k={`j:${c.session_id}`} reg={reg} hover={hover} active={activeKey === `j:${c.session_id}`} to={conversationPage(c.session_id, c.machine_id, c.manager)} go={go} label={directionLabel(directionNames, c.session_id, conversationTitle(c))} hint={countsLabel(counts.get(c.session_id), t) || undefined} hintFull showState={false} icon="pin" onMenu={onConvMenu} menuLabel={t("conversation-menu.actions")} />
+    <SessionRow key={c.session_id} s={c} k={`j:${c.session_id}`} reg={reg} hover={hover} active={activeKey === `j:${c.session_id}`} to={conversationPage(c.session_id, c.machine_id, c.manager)} go={go} label={directionLabel(directionNames, c.session_id, conversationTitle(c))} hint={countsLabel(counts.get(c.session_id), t) || undefined} hintFull showState={false} workingMark={(counts.get(c.session_id)?.working ?? 0) > 0} icon="pin" onMenu={onConvMenu} menuLabel={t("conversation-menu.actions")} />
   );
 
   const recentRow = (c: Session) => (
