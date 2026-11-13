@@ -399,6 +399,46 @@ func TestMeetingCallReadsNoMarks(t *testing.T) {
 	}
 }
 
+// #5904 in a meeting call: what it hands the room goes as the owner's words, so a start's speech_gate neither turns
+// the user-speech gate off nor brings Send Anyway. A question nobody was heard asking is refused unprompted, never sent
+// to the room, not kept for a resend, and the model does not offer the button.
+func TestMeetingCallKeepsTheSpeechGate(t *testing.T) {
+	setVar(t, &gateWait, 300*time.Millisecond)
+	for _, gate := range []bool{false, true} {
+		t.Run(fmt.Sprint("speech_gate ", gate), func(t *testing.T) {
+			hub := roomHub(t)
+			up := newFakeUpstream(t, func(u *fakeUpstream, c *websocket.Conn, f map[string]any) {
+				if f["type"] == "session.start" {
+					u.send(c, map[string]any{"type": "session.started", "session": map[string]any{}})
+					delegate(u, c, "dlg1", "供应商定了什么") // nobody spoke: no Talk, nothing typed
+				}
+			})
+			pl := testPlugin(t, liveProvider(up), hub.server(t))
+			logs := captureLog(t, pl)
+			a := dialApp(t, pl, meetingStart("rec1", "room1", map[string]any{"speech_gate": gate}))
+			a.until(ofType("ready"))
+			refused := a.until(runIn(runRefused))
+			id, _ := refused["id"].(string)
+			if refused["code"] != "unprompted" || refused["resendable"] != nil {
+				t.Fatalf("refused: %v", refused)
+			}
+			if got := content(up.nextMatch(on("dlg1"))); !strings.Contains(got, unpromptedWords) || strings.Contains(got, "仍然发送") {
+				t.Errorf("told: %s", got)
+			}
+			start := logs.wait("call 1: start:", "meeting call for recording rec1")
+			if off := strings.Contains(start, "speech gate off asked: not for a meeting call"); off == gate || strings.Contains(start, ", speech gate off,") {
+				t.Errorf("start: %s", start)
+			}
+			logs.wait("call 1: delegation dlg1: the user-speech gate refused it (unprompted)")
+			a.send(map[string]any{"type": "resend", "id": id})
+			logs.wait("call 1: resend " + id + ": no such refused run")
+			if msgs := hub.messages(); len(msgs) != 0 {
+				t.Fatalf("sent to the room: %+v", msgs)
+			}
+		})
+	}
+}
+
 // A Talk span the app never closes is closed by the extension past talkMost: the upstream hears its silence again
 // even while the app sends nothing, the app's audio after that is dropped, and the next talk{on} opens a span as ever.
 func TestMeetingTalkSpanIsCapped(t *testing.T) {

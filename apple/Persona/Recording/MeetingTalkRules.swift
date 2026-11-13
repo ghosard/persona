@@ -237,15 +237,22 @@ nonisolated enum MeetingTalkWords {
     }
 }
 
-nonisolated extension RecordingSpan {
-    /// How much wider than its audio a stretch Persona spoke in counts (the contract's「plus half a second」): the
-    /// microphone hears the room's echo of the voice a moment after it ends, and the sentence a transcription cuts out of it
-    /// can begin a moment before.
-    static let echoMargin: Double = 0.5
+/// What the meeting call's voice says in a stretch it plays (#3862 phase 4 with #5905, docs/assistant/meeting-minutes.md
+/// 「Persona's echo」): its answers, the voice's own captions, as `MeetingSpeaker` keeps the answer it says. A stretch
+/// carries the answers not kept with an earlier one, the one being said included, whole as far as it came (a line of the
+/// part said is still made of its words), in order; nil when none has words, and the stretch then keeps the time rule.
+nonisolated enum MeetingCallEcho {
+    static func said(_ captions: [VoiceCaption], kept: Set<String>) -> String? {
+        let words = captions.filter { !$0.isUser && !kept.contains($0.id) }
+            .map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return words.isEmpty ? nil : words.joined(separator: " ")
+    }
 
-    /// The stretch `margin` wider on each side (never before 0).
-    func widened(by margin: Double = RecordingSpan.echoMargin) -> RecordingSpan {
-        RecordingSpan(start: max(0, start - margin), end: end + margin)
+    /// The answers kept once a stretch closes: every final one the voice has said by then. One still being said goes on
+    /// into the next stretch too; those the call no longer holds are let go.
+    static func kept(_ captions: [VoiceCaption], before: Set<String>) -> Set<String> {
+        before.intersection(captions.map(\.id)).union(captions.filter { !$0.isUser && $0.final }.map(\.id))
     }
 }
 #endif

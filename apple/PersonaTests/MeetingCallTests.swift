@@ -6,7 +6,7 @@ import Testing
 /// Realtime voice in the meeting on the phone (#3862 phase 4; contract docs/assistant/meeting-minutes.md「Phase 4: realtime
 /// voice in the meeting」, the phone's side docs/apple/recording.md「Realtime voice (phase 4)」): who has a meeting call,
 /// its start frame and the wire's `talk` frames, the uplink that sends only inside Talk spans, reconnecting while the
-/// meeting records, the Lock Screen's talk window, Talk without a call, Persona's voice kept out of the transcript, the
+/// meeting records, the Lock Screen's talk window, Talk without a call, Persona's echo of the call's voice marked (#5905), the
 /// Live Activity's Talk, and no voice in a room opened as a chat. Fakes only (`VoiceRig`, `FakeVoiceSocket`,
 /// `FakeVoiceAudio`, a clock moved by hand); nothing reaches a network or a microphone.
 @MainActor struct MeetingCallTests {
@@ -160,6 +160,24 @@ import Testing
         other.audio.cancelsEcho = false
         await meetingCall(other).begin()
         #expect(other.socket?.start?["echo_cancellation"] as? Bool == false, "the recording records without it")
+    }
+
+    /// #5904: a meeting call says nothing of the user-speech gate, even with Only Send What I Just Said turned off on
+    /// this device: the meeting page has no Send Anyway, and the extension keeps the gate on for what goes to the room
+    /// as the owner's words. Turning the switch while it runs does not reopen it.
+    @Test func aMeetingCallSaysNothingOfTheSpeechGate() async throws {
+        let rig = VoiceRig()
+        let key = "voice.speechGate." + rig.key.group + ".voice"
+        UserDefaults.standard.set(false, forKey: key)
+        defer { UserDefaults.standard.removeObject(forKey: key) }
+        let call = meetingCall(rig)
+        await call.begin()
+        let start = try #require(rig.socket?.start)
+        #expect(start["speech_gate"] == nil)
+        #expect(start["mode"] as? String == "meeting")
+        ready(rig.socket!, rig.key)
+        call.change(speechGate: !call.speechGate)
+        #expect(rig.sockets.count == 1, "no new connection for the switch")
     }
 
     @Test func theTalkFrames() throws {
@@ -606,22 +624,74 @@ import Testing
 
     // MARK: Echo
 
-    /// The call's voice, half a second wider each side, is Persona's: a sentence at least half inside it leaves the
-    /// transcript (and with it the upload and the live log).
-    @Test func theVoicesStretchLeavesTheTranscript() {
-        let voice = RecordingSpan(start: 100, end: 104).widened()
-        #expect(voice == RecordingSpan(start: 99.5, end: 104.5))
-        #expect(RecordingSpan(start: 0.2, end: 3).widened() == RecordingSpan(start: 0, end: 3.5), "never before 0")
+    /// The words a stretch of the call's voice is kept with (#5905): its answers, the voice's own captions, not the
+    /// owner's; those kept with an earlier stretch stay out of the next one, except one still being said.
+    @Test func aStretchOfTheCallsVoiceCarriesItsAnswers() async throws {
+        let rig = VoiceRig()
+        let call = meetingCall(rig)
+        await call.begin()
+        ready(rig.socket!, rig.key)
+        #expect(MeetingCallEcho.said(call.captions, kept: []) == nil, "nothing said yet: the time rule")
+        rig.socket!.deliver(#"{"type":"transcript","role":"user","id":"u1","text":"What did we decide on the vendor?","final":true}"#)
+        rig.socket!.deliver(#"{"type":"transcript","role":"assistant","id":"a1","text":"Let me ask the room.","final":true}"#)
+        #expect(MeetingCallEcho.said(call.captions, kept: []) == "Let me ask the room.", "the owner's words are not Persona's")
+        let kept = MeetingCallEcho.kept(call.captions, before: [])
+        rig.socket!.deliver(#"{"type":"transcript","role":"assistant","id":"a2","text":"On Nov 3 you kept them","final":false}"#)
+        #expect(MeetingCallEcho.said(call.captions, kept: kept) == "On Nov 3 you kept them", "the next stretch: only what came after")
+        let still = MeetingCallEcho.kept(call.captions, before: kept)
+        rig.socket!.deliver(#"{"type":"transcript","role":"assistant","id":"a2","text":"On Nov 3 you kept them through Q3.","final":true}"#)
+        #expect(MeetingCallEcho.said(call.captions, kept: still) == "On Nov 3 you kept them through Q3.",
+                "an answer still being said as a stretch closed goes on into the next")
+        #expect(MeetingCallEcho.kept([], before: still).isEmpty, "captions the call no longer holds are let go")
+    }
+
+    /// A stretch of the call's voice is kept as it played, with its answer, never wider: the echo rule widens it itself
+    /// (`MeetingEcho.margin`). A line of the answer heard back inside it, or within the margin, is Persona's echo: hidden
+    /// in the transcript and kept on the recording; someone talking over it, or the room saying the answer's words after
+    /// the margin, stays the meeting's.
+    @Test func theCallsEchoIsMarkedAndTheRoomIsKept() {
+        let voice = RecordingSpan(start: 100, end: 104, text: "On Nov 3 you kept them through Q3.")
         var e = meeting()
         e.attendance?.spoken = [voice]
         e.segments = [RecordingSegment(index: 0, start: 90, duration: 30, sentences: [
             RecordingSentence(start: 92, end: 98, text: "The room asks."),
-            RecordingSentence(start: 100.2, end: 104.4, text: "Persona's answer, heard again."),
-            RecordingSentence(start: 103.5, end: 105.5, text: "The tail of it, half inside."),
-            RecordingSentence(start: 104, end: 110, text: "The room goes on."),
+            RecordingSentence(start: 100.2, end: 102.5, text: "on Nov 3 you kept them"),
+            RecordingSentence(start: 101, end: 103.8, text: "Wait, who owns the export cap?"),
+            RecordingSentence(start: 104.3, end: 105.5, text: "through Q3."),
+            RecordingSentence(start: 104.6, end: 107, text: "You kept them through Q3, right."),
         ])]
-        #expect(e.sentences.map(\.text) == ["The room asks.", "The room goes on."])
-        #expect(!(e.attendance?.spokenBy(RecordingSentence(start: 104, end: 110, text: "")) ?? true))
+        #expect(e.sentences.map(\.text) == ["The room asks.", "Wait, who owns the export cap?", "You kept them through Q3, right."])
+        #expect(e.markedSentences.map { $0.echo } == [false, true, false, true, false])
+        #expect(e.segments[0].sentences?.count == 5, "kept on the recording")
+    }
+
+    /// The upload while the call's voice plays: to a hub that lists `meeting_echo` the echo of the stretch so far goes
+    /// marked and the stretch, with its words, goes in `spoken`; to an older hub the echo is left out. Someone talking
+    /// over the voice goes as the meeting's either way, and so into the live log.
+    @Test func theCallsOpenStretchMarksTheUploadAndTheLiveLog() async throws {
+        var e = meeting()
+        e.segments = [RecordingSegment(index: 0, start: 90, duration: 30, sentences: [
+            RecordingSentence(start: 92, end: 98, text: "Who owns the export cap?"),
+            RecordingSentence(start: 100.2, end: 102.5, text: "Dana owns the export cap."),
+            RecordingSentence(start: 101, end: 103.8, text: "Stop for a moment."),
+        ])]
+        let open = RecordingSpan(start: 100, end: 103, text: "Dana owns the export cap, since Monday.")
+        var marked = RecordingUpload(e, hubEcho: true)
+        marked.speaking(open)
+        #expect(marked.segments.map(\.echo) == [nil, true, nil])
+        #expect(marked.spoken?.map(\.text) == [open.text])
+        #expect(marked.spoken?.first?.start == 100 && marked.spoken?.first?.end == 103, "never wider than it played")
+        var older = RecordingUpload(e, hubEcho: false)
+        older.speaking(open)
+        #expect(older.segments.map(\.text) == ["Who owns the export cap?", "Stop for a moment."])
+        #expect(older.spoken == nil)
+
+        let lib = RecordingLibrary(root: FileManager.default.temporaryDirectory.appending(path: "meeting-call-echo-\(UUID())"))
+        try lib.save(e)
+        let live = MeetingLive(deps: MeetingLive.Deps(post: { _, from, s in .init(next: from + s.count) }, settled: { _ in true },
+                                                      upload: { _ in }, openSpans: { _ in [open] }, wait: { _ in }), library: lib)
+        live.append(e.id)
+        #expect(lib.entry(e.id)?.attendance?.live.map(\.text) == ["Who owns the export cap?", "Stop for a moment."])
     }
 
     // MARK: The Live Activity

@@ -32,6 +32,11 @@ import (
 // spans the extension feeds the upstream silence itself, so the session stays open and the model hears nothing. The
 // app is not trusted with that: its audio outside a span is dropped and logged, and the silence goes in its place, and
 // a span it leaves open past talkMost is closed, so a phone bug cannot stream the meeting to the voice service.
+//
+// What it hands the room goes as the owner's words, so the user-speech gate (gate.go) always holds: only what the owner
+// just said in Talk, or typed, opens it. A start's speech_gate (#5904) neither turns it off nor brings Send Anyway: a
+// question the gate held back is not kept for a resend (the meeting page has no such button), and the owner says it
+// again in the next Talk.
 
 const (
 	// modeMeeting is start.mode of a meeting call.

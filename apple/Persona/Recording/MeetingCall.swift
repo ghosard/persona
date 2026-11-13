@@ -22,8 +22,10 @@ import OSLog
 /// span the call loses midway (its socket dropped) goes on that way. A hold ends when the finger lifts, when the page's
 /// Talk goes (the page left, Just Me), at the activity's Done, or after 60 seconds.
 ///
-/// **Echo.** Every stretch the call's voice plays in, half a second wider each side, is Persona's
-/// (`RecordingAttendance.spoken`): a sentence at least half inside one leaves the transcript and the live log.
+/// **Echo.** Every stretch the call's voice plays in is kept on the recording with what the voice said in it, the call's
+/// answers (`RecordingAttendance.spoken`, `MeetingCallEcho`), as `MeetingSpeaker` keeps an answer it says: a sentence that
+/// overlaps one and says those words is Persona's echo (#5905, `RecordingSpan.echoes`, which widens the stretch itself),
+/// hidden in the transcript, kept out of the live log and uploaded marked; what anyone says over it stays the meeting's.
 @MainActor @Observable final class MeetingCall {
     static let shared = MeetingCall()
 
@@ -111,6 +113,9 @@ import OSLog
     @ObservationIgnored private var probeTask: Task<Void, Never>?
     /// Where the call's voice began playing on the recording's clock, while it plays.
     @ObservationIgnored private var voiceStart: (recording: UUID, at: Double)?
+    /// The call's answers (its voice's captions) a closed stretch of its voice was kept with: a later stretch carries only
+    /// what came after (`MeetingCallEcho`). For the call that runs now: another call's captions start again.
+    @ObservationIgnored private var keptAnswers: Set<String> = []
 
     private struct Asked {
         var recording: UUID
@@ -185,12 +190,14 @@ import OSLog
         call?.interruptSpeech()
     }
 
-    /// The stretch the call's voice is playing in now, half a second wider: a sentence transcribed meanwhile is checked
-    /// against it (`MeetingLive`, the upload).
+    /// The stretch the call's voice is playing in now, with what it is saying (its answers not kept with an earlier
+    /// stretch, the one being said included, whole as far as it came): a sentence transcribed meanwhile is checked against
+    /// it (`MeetingLive`, the upload). As it plays: the echo rule widens it (`MeetingEcho.margin`), never this.
     func openSpan(for recording: UUID) -> RecordingSpan? {
         guard let voiceStart, voiceStart.recording == recording else { return nil }
         let end = min(max(capture.timeline, voiceStart.at), voiceStart.at + Self.longestVoice)
-        return RecordingSpan(start: voiceStart.at, end: end).widened()
+        let said = callRecording == recording ? MeetingCallEcho.said(call?.captions ?? [], kept: keptAnswers) : nil
+        return RecordingSpan(start: voiceStart.at, end: end, text: said)
     }
 
     // MARK: Talk
@@ -458,11 +465,12 @@ import OSLog
                 endCall()
             } else if case .ended(let why) = call.phase {
                 log.notice("meeting call ended: \(String(describing: why), privacy: .public)")
+                // Its voice's stretch is kept first, with what it said: the captions go with the call.
+                played(false, recording: id)
                 keep(call, recording: id)
                 self.call = nil
                 callAudio = nil
                 callRecording = nil
-                played(false, recording: id)
                 retry = (id, MeetingCallRule.retries(after: why) ? Date.now.addingTimeInterval(Self.seconds(VoiceMeeting.retryEvery)) : nil)
                 // It took meeting calls: the next one may need the hub asked again.
                 asked = nil
@@ -505,6 +513,7 @@ import OSLog
                                      deps: deps)
         self.call = call
         callRecording = recording
+        keptAnswers = []
         log.info("meeting call: starting (echo cancellation \(self.capture.cancelsEcho, privacy: .public))")
         Task { await call.begin() }
     }
@@ -565,8 +574,8 @@ import OSLog
 
     // MARK: Echo
 
-    /// The call's voice began (`true`) or stopped playing: the stretch it took, half a second wider each side, is
-    /// Persona's on the recording.
+    /// The call's voice began (`true`) or stopped playing: the stretch it took is Persona's on the recording, kept with
+    /// what the voice said in it (`openSpan`); the answers said by then are not carried into the next stretch.
     private func played(_ on: Bool, recording: UUID) {
         if on {
             if voiceStart == nil { voiceStart = (recording, capture.timeline) }
@@ -574,6 +583,7 @@ import OSLog
         }
         guard let span = openSpan(for: recording) else { return }
         voiceStart = nil
+        if callRecording == recording { keptAnswers = MeetingCallEcho.kept(call?.captions ?? [], before: keptAnswers) }
         library.change(recording) { $0.attendance?.spoken.append(span) }
     }
 
