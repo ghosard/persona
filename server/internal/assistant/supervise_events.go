@@ -145,7 +145,7 @@ func (s *Service) noteOwnerWait(ctx context.Context, t Todo, work time.Time, rea
 		s.logf("task %s: owner wait: %v", t.ID, err)
 		return
 	}
-	s.signal(superviseSignal{Todo: t.ID, Kind: sigIdle, Key: work.UTC().Format(time.RFC3339Nano), Detail: "要用户决定：" + reason})
+	s.signal(superviseSignal{Todo: t.ID, Kind: sigIdle, Key: work.UTC().Format(time.RFC3339Nano), Detail: "要用户决定：" + reason}) // i18n-ignore: the supervision message is the assistant's prompt
 	if changed && !t.Quiet {
 		go s.notifyTaskNeedsUser(context.WithoutCancel(ctx), t, work, reason)
 	}

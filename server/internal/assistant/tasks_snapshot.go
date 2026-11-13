@@ -276,7 +276,7 @@ func agentWaits(c proto.Session) bool {
 
 func taskStateLabel(st string) string {
 	return map[string]string{"done": "已完成", "auto_done": "已完成（hub 判断做完了，自动关的）", "failed": "没开起来", "needs_you": "等用户",
-		"owner_wait": "等你处理", "awaiting_review": "已交付·待看",
+		"owner_wait": "等你处理", "awaiting_review": "已交付·待看", // i18n-ignore: the model reads these snapshot labels
 		"interrupted": "模型服务出错，中断了（没做完，等用户让它继续）", "unread": "已交付·待看", "working": "在做",
 		"followup": "停着", "not_started": "还没开始",
 		// "cancelled" shares the ignored final line: every label here is model-read prompt text, and this keeps the

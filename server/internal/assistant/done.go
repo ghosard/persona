@@ -84,9 +84,9 @@ func ownerActionLine(text string) string {
 			marker    string
 			negations []string
 		}{
-			{"需要你本人操作", []string{"不需要你本人操作", "无需你本人操作", "不用你本人操作", "不必你本人操作"}},
-			{"由你发起", []string{"不需要由你发起", "无需由你发起", "不用由你发起", "不必由你发起"}},
-			{"要不要", []string{"不需要你决定要不要", "无需你决定要不要", "不用你决定要不要", "不是要不要"}},
+			{"需要你本人操作", []string{"不需要你本人操作", "无需你本人操作", "不用你本人操作", "不必你本人操作"}}, // i18n-ignore: parser markers, not display copy
+			{"由你发起", []string{"不需要由你发起", "无需由你发起", "不用由你发起", "不必由你发起"}},        // i18n-ignore: parser markers, not display copy
+			{"要不要", []string{"不需要你决定要不要", "无需你决定要不要", "不用你决定要不要", "不是要不要"}},    // i18n-ignore: parser markers, not display copy
 		} {
 			if !strings.Contains(compact, p.marker) {
 				continue

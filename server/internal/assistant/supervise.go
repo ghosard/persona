@@ -331,7 +331,7 @@ func taskHealth(t Todo, agents []proto.Session, now time.Time) (string, int) {
 		return "停下等用户拍板，别直接验收", 0 // i18n-ignore: the snapshot is the assistant's prompt
 	}
 	if deliveryAwaitsReview(t, agents) {
-		return "已交付·待看", 1
+		return "已交付·待看", 1 // i18n-ignore: the snapshot is the assistant's prompt
 	}
 	for _, c := range agents {
 		if c.State == proto.StateNeedsYou || c.PendingInteractions > 0 {

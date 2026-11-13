@@ -331,7 +331,7 @@ func (s *Service) dropQueuedSupervisionTasks(conversation string, ids map[string
 						continue
 					}
 					remaining = append(remaining, superviseSignal{Todo: other.ID, Kind: sigUnjudged,
-						Key: "pre-restart-" + at.UTC().Format(time.RFC3339Nano), At: at, Detail: "重启前排队的督办"})
+						Key: "pre-restart-" + at.UTC().Format(time.RFC3339Nano), At: at, Detail: "重启前排队的督办"}) // i18n-ignore: the supervision message is the assistant's prompt
 				}
 			}
 		}
