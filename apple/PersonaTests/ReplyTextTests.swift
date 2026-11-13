@@ -181,7 +181,7 @@ struct ReplyTextTests {
     /// An answer drawn in parts (#5291): each line of its words says its part, found by the lines the parts start on,
     /// and its tables' sizes are found by part.
     @Test func eachLineOfAnAnswerInPartsSaysItsPart() throws {
-        // Lines: 0 第一段, 2-4 a table, 6 第二段, 8 the heading, 10 第三段; the parts start on 0, 6 and 8.
+        // Lines: 0 「第一段」, 2-4 a table, 6 「第二段」, 8 the heading, 10 「第三段」; the parts start on 0, 6 and 8.
         let md = "第一段。\n\n| 页面 | 风险 |\n| --- | --- |\n| 首页 | 低 |\n\n第二段。\n\n## 标题\n\n第三段。"
         let s = ReplyText.attributed(md, look: look, width: 360, tables: [0: [CGSize(width: 200, height: 70)]], parts: [0, 6, 8])
         func part(of words: String) -> Int? {

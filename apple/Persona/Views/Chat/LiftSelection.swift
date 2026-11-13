@@ -372,7 +372,7 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
                 partRanges[n] = partRanges[n].map { NSUnionRange($0, range) } ?? range
             }
         }
-        _ = followChat() // before anything lays them out
+        followChat() // before anything lays them out
         snapSoon()
         #if DEBUG
         setNeedsLayout() // `LiftLines`
@@ -440,10 +440,11 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
         snapper.hidden = []
         snapper.shifts = [:]
         let split = !parts.isEmpty
-        // A line TextKit 1 laid out once and now breaks elsewhere keeps a stale end (its last glyph's box at the line's
-        // right edge, zero wide): its glyphs are made again.
-        if let moved = followChat() {
-            layout.invalidateGlyphs(forCharacterRange: moved, changeInLength: 0, actualCharacterRange: nil)
+        // A line TextKit 1 laid out (and measured) once and now breaks elsewhere keeps a stale end, its last glyph's box
+        // at the line's right edge, zero wide. Invalidating only those lines' glyphs leaves it; invalidating all of them
+        // clears it, in no more time than the layout takes (docs/lessons/ios.md).
+        if followChat() {
+            layout.invalidateGlyphs(forCharacterRange: all, changeInLength: 0, actualCharacterRange: nil)
         }
         layout.invalidateLayout(forCharacterRange: all, actualCharacterRange: nil)
         guard segments.contains(where: { !$0.rows.isEmpty }), storage.length > 0 else { return }
@@ -498,9 +499,8 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
     }
 
     /// Where its lines break, as the chat's do (`LiftLayout.follow`), in all of the words or in each part laid out: set
-    /// before its words are first laid out (`render`). Changed, the characters between the first and the last that
-    /// changed; nil: as they were.
-    private func followChat() -> NSRange? {
+    /// before its words are first laid out (`render`). true: they changed.
+    @discardableResult private func followChat() -> Bool {
         let all = NSRange(location: 0, length: storage.length)
         let split = !parts.isEmpty
         let paragraphs = wrapping
@@ -516,14 +516,9 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
             held.formUnion(f.held)
             breaks.formUnion(f.at)
         }
-        let changed = held.symmetricDifference(snapper.held).union(breaks.symmetricDifference(snapper.breaks))
+        guard held != snapper.held || breaks != snapper.breaks else { return false }
         (snapper.held, snapper.breaks) = (held, breaks)
-        guard let first = changed.first, let last = changed.last, first < all.length else { return nil }
-        // A paragraph's whole lines: from the start of the first's to the end of the last's.
-        let text = storage.string as NSString
-        let from = text.paragraphRange(for: NSRange(location: first, length: 0))
-        let to = text.paragraphRange(for: NSRange(location: min(last, all.length - 1), length: 0))
-        return NSUnionRange(from, to)
+        return true
     }
 
     /// How far back a wrapped line goes to start at its paragraph's indent, as the chat's does; nil: it does. Laid out
