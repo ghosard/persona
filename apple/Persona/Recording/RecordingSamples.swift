@@ -88,7 +88,8 @@ enum RecordingSamples {
 
     /// `-showMeetingSample recording|paused|interrupted`: a meeting 12:34 into its recording, as the recording page and its
     /// Live Activity show it (no microphone); `listening|taking-part|answered`: the same with Persona attending (#2981);
-    /// `room-listening|room-taking-part`: the same as a room meeting (#3862), whose sheet is the meeting page;
+    /// `room-listening|room-taking-part`: the same as a room meeting (#3862) started with the live view (phase 2), whose
+    /// sheet is the meeting page;
     /// `room-whiteboard`: `room-taking-part` started with photos, which adds a made-up whiteboard photo as the camera
     /// would (#3862 phase 3); `minutes` / `pending`: a finished meeting whose page opens (its minutes from the hub, or
     /// still being written). Both recordings are made up.
@@ -138,7 +139,9 @@ enum RecordingSamples {
         let photos = mode == "room-whiteboard"
         if ["listening", "taking-part", "answered"].contains(mode) || room {
             if room {
-                live.attendance = RecordingAttendance.room(mode == "room-listening" ? .listener : .participant, private: false, photos: photos)
+                // Started with the live view (#3862 phase 2): the page shows the room's topics once the hub has any.
+                live.attendance = RecordingAttendance.room(mode == "room-listening" ? .listener : .participant, private: false,
+                                                           photos: photos, liveView: true)
             } else {
                 live.attendance = RecordingAttendance(role: mode == "listening" ? .listener : .participant, session: nil,
                                                       sessionTitle: "Persona", mainPicked: true)
@@ -255,7 +258,7 @@ extension RecordingSamples {
     }
 
     private static func installDays(_ mode: String?) async {
-        await removeEarlierDays()
+        await removeEarlierDays(rebuilding: mode.map(dayModes.contains) ?? false)
         guard let mode, dayModes.contains(mode) else { return }
         let consent = RecordingDayConsent.shared
         if mode == "consent" {
@@ -282,7 +285,9 @@ extension RecordingSamples {
 
     /// An earlier run's made-up days, with everything the store kept of them: built again on every run (another day,
     /// another mode).
-    private static func removeEarlierDays() async {
+    /// `rebuilding`: the made-up days are built again now, so an earlier run's erases over a stretch of time go too (every
+    /// launch of a DEBUG build comes here; without a sample it leaves them, a real erase kept for a day still to come).
+    private static func removeEarlierDays(rebuilding: Bool) async {
         let library = RecordingLibrary.shared, store = RecordingDayStore.shared
         for id in [pastDay, todayDay] {
             let stored = await store.record(id) != nil
@@ -295,7 +300,7 @@ extension RecordingSamples {
             _ = await store.record(id)
         }
         // An earlier run's erases (Erase Last 10 Minutes) would otherwise reach the same hours of the day built again.
-        await store.forgetSampleRequests([pastDay, todayDay])
+        await store.forgetSampleRequests([pastDay, todayDay], ranges: rebuilding)
     }
 
     /// A made-up day: its chunks and control events as the watch would send them, and the text the phone would have
