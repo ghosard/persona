@@ -71,11 +71,9 @@ func (n *Node) repoOfWorkspace(ctx context.Context, kind, workspace, cwd string)
 		return nil, "", repo, worktreeUnsupported(h.Kind())
 	}
 	if workspace == "" {
-		space, lookupErr := spaceHolding(ctx, h, proto.ExpandHome(cwd, n.home))
-		if lookupErr != nil {
-			return nil, "", repo, lookupErr
+		if workspace, err = spaceHolding(ctx, h, proto.ExpandHome(cwd, n.home)); err != nil {
+			return nil, "", repo, err
 		}
-		workspace = space.ID
 	}
 	dir, err := n.gitDirOf(ctx, "", workspace, kind)
 	if err != nil {
@@ -142,7 +140,7 @@ func repoAt(ctx context.Context, dir string) (worktreeRepo, error) {
 }
 
 // spaceHolding is the host's space whose directory is dir or holds it, the deepest such space.
-func spaceHolding(ctx context.Context, h host.Host, dir string) (host.Space, error) {
+func spaceHolding(ctx context.Context, h host.Host, dir string) (string, error) {
 	// A full layout fills workspace directories from agreeing panes; herdr's workspace.list can omit them.
 	// Keep Spaces as the fallback when the snapshot is unavailable or has no spaces.
 	var spaces []host.Space
@@ -153,21 +151,20 @@ func spaceHolding(ctx context.Context, h host.Host, dir string) (host.Space, err
 		var err error
 		spaces, err = l.Spaces(ctx)
 		if err != nil {
-			return host.Space{}, err
+			return "", err
 		}
 	} else {
-		return host.Space{}, unsupported(h)
+		return "", unsupported(h)
 	}
 	d := realPath(filepath.Clean(dir))
-	var best host.Space
-	depth := -1
+	best, depth := "", -1
 	for _, s := range spaces {
 		if c := realPath(filepath.Clean(s.Cwd)); s.Cwd != "" && within(d, c) && len(c) > depth {
-			best, depth = s, len(c)
+			best, depth = s.ID, len(c)
 		}
 	}
-	if best.ID == "" {
-		return host.Space{}, fmt.Errorf("%s 不在这台电脑的任何工作区里", dir)
+	if best == "" {
+		return "", fmt.Errorf("%s 不在这台电脑的任何工作区里", dir)
 	}
 	return best, nil
 }
@@ -270,16 +267,6 @@ func (n *Node) worktreeCreate(ctx context.Context, kind, workspace, cwd, branch,
 	if len(parents) > 0 && parents[0] != "" {
 		parent = parents[0]
 	}
-	sourceWorkspace, sourceCwd := workspace, ""
-	if repo.mainRoot != "" && h.Kind() == host.Herdr {
-		// herdr starts a new worktree from the main checkout's own workspace, never from a linked checkout.
-		// Validate the directory in the same snapshot instead of a potentially older cached layout.
-		if mainSpace, sourceErr := spaceHolding(ctx, h, repo.mainRoot); sourceErr == nil && realPath(mainSpace.Cwd) == realPath(repo.mainRoot) {
-			sourceWorkspace = mainSpace.ID
-		} else {
-			sourceWorkspace, sourceCwd = "", repo.mainRoot
-		}
-	}
 	if parent != workspace {
 		w, ok := h.(interface {
 			CreateWorktreeUnder(context.Context, string, string, string, string) (*host.Created, error)
@@ -289,16 +276,12 @@ func (n *Node) worktreeCreate(ctx context.Context, kind, workspace, cwd, branch,
 		}
 		created, err = w.CreateWorktreeUnder(ctx, workspace, branch, dest, parent)
 	} else if w, ok := h.(host.Worktreer); ok && w.CanWorktree() {
-		if sourceCwd != "" {
-			cw, ok := h.(interface {
-				CreateWorktreeFromCwd(context.Context, string, string, string, string) (*host.Created, error)
-			})
-			if !ok {
-				return res, errors.New("This terminal host cannot create a worktree from a directory")
-			}
-			created, err = cw.CreateWorktreeFromCwd(ctx, workspace, sourceCwd, branch, dest)
+		if main, ok := h.(interface {
+			CreateWorktreeFromMain(context.Context, string, string, string, string) (*host.Created, error)
+		}); ok && repo.mainRoot != "" {
+			created, err = main.CreateWorktreeFromMain(ctx, workspace, repo.mainRoot, branch, dest)
 		} else {
-			created, err = w.CreateWorktree(ctx, sourceWorkspace, branch, dest)
+			created, err = w.CreateWorktree(ctx, workspace, branch, dest)
 		}
 	} else {
 		created, err = n.worktreeByGit(ctx, h, repo, branch, dest)

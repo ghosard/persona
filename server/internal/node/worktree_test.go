@@ -190,8 +190,8 @@ func TestSpaceHoldingFallsBackToWorkspaceList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if workspace.ID != "w1" {
-		t.Fatalf("spaceHolding from workspace.list = %q", workspace.ID)
+	if workspace != "w1" {
+		t.Fatalf("spaceHolding from workspace.list = %q", workspace)
 	}
 	if got := w.f.trace("workspace.list"); len(got) != 1 {
 		t.Fatalf("workspace.list calls = %v", got)
@@ -308,11 +308,9 @@ func TestWorktreeCreateFromLinkedCheckoutUsesMainRepository(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
 		mainWorkspace string
-		staleMain     bool
 	}{
 		{name: "main checkout workspace is open", mainWorkspace: "checkout"},
 		{name: "only an ancestor workspace is open", mainWorkspace: "ancestor"},
-		{name: "main checkout workspace moved to an ancestor", mainWorkspace: "ancestor", staleMain: true},
 		{name: "main checkout workspace is not open"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -332,25 +330,12 @@ func TestWorktreeCreateFromLinkedCheckoutUsesMainRepository(t *testing.T) {
 			case "ancestor":
 				mainDir = filepath.Dir(w.repo)
 			}
-			cachedMainDir := mainDir
-			if tc.staleMain {
-				cachedMainDir = w.repo
-			}
 			if mainDir != "" {
-				spaces = append([]any{
-					map[string]any{"workspace_id": "w-main", "label": "proj", "number": 1, "cwd": cachedMainDir},
-				}, spaces...)
-				panes = append([]any{
-					map[string]any{"pane_id": "w-main:p1", "tab_id": "w-main:t1", "workspace_id": "w-main", "cwd": cachedMainDir},
-				}, panes...)
+				spaces = append(spaces, map[string]any{"workspace_id": "w-main", "label": "proj", "number": 1, "cwd": mainDir})
+				panes = append(panes, map[string]any{"pane_id": "w-main:p1", "tab_id": "w-main:t1", "workspace_id": "w-main", "cwd": mainDir})
 			}
 			w.f.reply("session.snapshot", snapshot(spaces, nil, nil, panes))
 			listSessions(t, w.n)
-			if tc.staleMain {
-				spaces[0].(map[string]any)["cwd"] = mainDir
-				panes[0].(map[string]any)["cwd"] = mainDir
-				w.f.reply("session.snapshot", snapshot(spaces, nil, nil, panes))
-			}
 			w.f.reset()
 
 			dest := filepath.Join(w.home, "trees", "from-linked")

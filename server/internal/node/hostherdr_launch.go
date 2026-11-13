@@ -105,29 +105,37 @@ func (h *herdrHost) Split(ctx context.Context, pane host.PaneRef, direction, cwd
 // CreateWorktree has herdr check the branch out at path and open it as a workspace grouped under the source one, in
 // the source one's session.
 func (h *herdrHost) CreateWorktree(ctx context.Context, space, branch, path string) (*host.Created, error) {
+	return h.createWorktree(ctx, space, "", branch, path)
+}
+
+// CreateWorktreeFromMain starts from a linked checkout's main repository. A fresh layout of the source session decides
+// whether the main checkout has its own workspace; cached layouts are never used for this choice.
+func (h *herdrHost) CreateWorktreeFromMain(ctx context.Context, space, mainRoot, branch, path string) (*host.Created, error) {
+	return h.createWorktree(ctx, space, mainRoot, branch, path)
+}
+
+func (h *herdrHost) createWorktree(ctx context.Context, space, mainRoot, branch, path string) (*host.Created, error) {
 	t, err := h.target(ctx, space)
 	if err != nil {
 		return nil, err
 	}
-	c, err := t.c.WorktreeCreate(ctx, t.id, branch, path)
-	if err != nil {
-		return nil, err
+	space = t.id
+	if mainRoot != "" {
+		if l, layoutErr := layoutOf(ctx, t.c, ""); layoutErr == nil {
+			for _, s := range l.Spaces {
+				if s.Cwd != "" && realPath(s.Cwd) == realPath(mainRoot) {
+					space, mainRoot = s.ID, ""
+					break
+				}
+			}
+		}
 	}
-	out := fromHerdrCreated(t.session, &c.Created)
-	if out.SpaceID == "" {
-		return nil, errors.New("herdr did not return the new workspace")
+	var c *herdr.WorktreeCreated
+	if mainRoot != "" {
+		c, err = t.c.WorktreeCreateFromCwd(ctx, mainRoot, branch, path)
+	} else {
+		c, err = t.c.WorktreeCreate(ctx, space, branch, path)
 	}
-	return out, nil
-}
-
-// CreateWorktreeFromCwd creates a worktree from a main checkout that has no open workspace. sourceSpace selects the
-// herdr session, but only cwd is sent as the repository source.
-func (h *herdrHost) CreateWorktreeFromCwd(ctx context.Context, sourceSpace, cwd, branch, path string) (*host.Created, error) {
-	t, err := h.target(ctx, sourceSpace)
-	if err != nil {
-		return nil, err
-	}
-	c, err := t.c.WorktreeCreateFromCwd(ctx, cwd, branch, path)
 	if err != nil {
 		return nil, err
 	}
