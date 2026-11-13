@@ -144,6 +144,15 @@ struct AnswerPartsLift: View {
     /// The first frame is drawn: the parts above the pressed one are themselves.
     @State private var grown = false
     @State private var frames = LiftFrames()
+    /// TEMP #6339: the parts above the pressed one that have come into view (variants 1 and 2).
+    @State private var near: Set<Int> = []
+    #if DEBUG
+    /// TEMP #6339: 0 as it was; 1 a held part turns into its words as it comes into view; 2 as 1, and the first frame
+    /// holds all of the parts above in one row.
+    static let variant = UserDefaults.standard.integer(forKey: "showLiftVariant")
+    #else
+    static let variant = 0
+    #endif
 
     var body: some View {
         let parts = AnswerPartMemo.parts(item.text ?? "")
@@ -152,7 +161,7 @@ struct AnswerPartsLift: View {
                 .liftPressedPart(true)
                 .markdownSoftBreakMode(.lineBreak)
                 .selectableInLift(item.text ?? "", as: .reply(quiet: false))
-        } else {
+        } else if Self.variant == 0 {
             let waits = !grown && pressed > 0 && tallerThanTheScreen(parts)
             LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(parts.indices, id: \.self) { n in
@@ -165,7 +174,35 @@ struct AnswerPartsLift: View {
             .onAppear {
                 if waits { frames.run { grown = true; return false } }
             }
+        } else {
+            let holds = pressed > 0 && tallerThanTheScreen(parts)
+            // Rows by id: a part's index, or -1 for all of the parts above the pressed one in one row (variant 2's first frame).
+            let rows: [Int] = holds && Self.variant == 2 && !grown ? [-1] + Array(pressed..<parts.count) : Array(parts.indices)
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(rows, id: \.self) { n in
+                    if n < 0 {
+                        aboveAll(parts)
+                    } else if holds && n < pressed && !near.contains(n) {
+                        held(parts, n).onScrollVisibilityChange(threshold: 0.01) { if $0 { near.insert(n) } }
+                    } else {
+                        words(parts, n)
+                    }
+                }
+            }
+            .scrollTargetLayout()
+            .markdownSoftBreakMode(.lineBreak)
+            .selectableInLift(item.text ?? "", as: .reply(quiet: false), parts: parts.map(\.line))
+            .onAppear {
+                if holds && Self.variant == 2 { frames.run { grown = true; return false } }
+            }
         }
+    }
+
+    /// TEMP #6339: all of the parts above the pressed one held in one row, as tall as their own rows.
+    private func aboveAll(_ parts: [AnswerParts.Part]) -> some View {
+        let per = height(perByteOf: parts)
+        let h = (0..<pressed).reduce(CGFloat(0)) { $0 + CGFloat(parts[$1].text.utf8.count) * per + ($1 == 0 ? 0 : parts[$1].gap) }
+        return Color.clear.frame(height: h)
     }
 
     @ViewBuilder private func words(_ parts: [AnswerParts.Part], _ n: Int) -> some View {
