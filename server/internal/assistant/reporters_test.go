@@ -76,7 +76,8 @@ func TestStopReportingStopsItsTasks(t *testing.T) {
 		t.Fatalf("interrupted %q", got)
 	}
 	agentTurn(s, f, proto.StatusDone, "停在一半", 0)
-	time.Sleep(10 * quietNoticeDelay)
+	// Force the delayed quiet-notice path: after /stop it has no pending notice to send.
+	s.sendQuietNotice(onlyTodo(s).ID)
 	if n := f.sentTo("lark1"); n != 0 {
 		t.Fatalf("the stopped conversation got %d notice(s)", n)
 	}
@@ -143,7 +144,14 @@ func TestStopReportingDropsPendingSupervision(t *testing.T) {
 	if w := serve(s, "POST", "/api/v1/assistant/conversations/lark1/stop", ""); w.Code != 200 {
 		t.Fatalf("%d %s", w.Code, w.Body)
 	}
-	time.Sleep(4 * shortSuperviseTimings.every)
+	waitFor(t, "the digest timer after stop", func() bool {
+		s.supervise.mu.Lock()
+		defer s.supervise.mu.Unlock()
+		return s.supervise.timer == nil
+	})
+	// The timer clears its handle before checking the now-empty pending list. Wait for that callback to finish too.
+	s.supervise.dedupMu.Lock()
+	s.supervise.dedupMu.Unlock()
 	if got := f.notices(); len(got) != 0 {
 		t.Fatalf("pending supervision reached main after stop: %q", got)
 	}
