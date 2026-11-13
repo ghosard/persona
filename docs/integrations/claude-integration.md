@@ -130,6 +130,12 @@ running Agent to another provider".
   the `launcher_switch_now` capability is refused by the hub (`node_outdated`) before anything is typed. An agent a
   usage limit stopped is sent `agents/limit_continue` when the assistant gives no text; its pending usage-limit
   continuation is not sent afterwards (its turn moved on: `workGuard` drops the wake).
+- **Claude Code's usage-limit question** (#6237): a turn that stops on a subscription limit leaves the question
+  "What do you want to do? 1. Stop and wait for limit to reset / 2. Wait here… / 3. Switch to usage credits" on screen,
+  and herdr reports the agent blocked. A launcher switch about to be carried out (a message with `apply_switch` or
+  `switch_now`, or `session.switch`) answers it with the first choice when that one is selected, waits up to 10 s for the
+  question to go and the agent to be idle, and goes on; it never picks the credits or the wait in the terminal. Any other
+  dialog, or the question with another choice selected, still makes the switch wait (`switch_busy`).
 - **Many at once** (`agents_switch`, #6008): when the user asks, the assistant moves a list of agents, or every running
   Claude Code agent on a computer and/or launcher, with one confirmation. One a usage limit stopped is switched with the
   continuation (`switch_now`); an idle one is switched with no message (node `session.switch`, capability
