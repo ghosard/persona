@@ -249,9 +249,9 @@ function StepLine({ step, machine }: { step: LineageStep; machine: string }) {
 
 /** One direction of the hand-off, linked to its card when the detail page supplied navigation (#5732). */
 function LineageLink({ id, label, onOpenTodo }: { id: string; label: string; onOpenTodo?: (id: string) => void }) {
-  if (!onOpenTodo) return <span className="text-[12.5px] text-ink-2">{label}</span>;
+  if (!onOpenTodo) return <span className="text-xs text-ink-2">{label}</span>;
   return (
-    <button type="button" data-open-todo={id} onClick={() => onOpenTodo(id)} className="w-fit whitespace-nowrap text-left text-[12.5px] text-accent-ink hover:underline">
+    <button type="button" data-open-todo={id} onClick={() => onOpenTodo(id)} className="w-fit whitespace-nowrap text-left text-xs text-accent-ink hover:underline">
       {label}
     </button>
   );

@@ -816,7 +816,7 @@ export function TodosView({
                     <button
                       type="button"
                       onClick={() => setShowCancelled((v) => !v)}
-                      className="flex h-8 w-full items-center justify-between rounded-control px-2.5 text-[12px] text-ink-3 transition-colors hover:bg-hover hover:text-ink-2"
+                      className="flex h-8 w-full items-center justify-between rounded-control px-2.5 text-xs text-ink-3 transition-colors hover:bg-hover hover:text-ink-2"
                     >
                       <span>{t("todos.cancelled_section", { count: filteredCancelled.length })}</span>
                       <Icon name="chevron" size={12} className={cx("transition-transform duration-200", showCancelled ? "rotate-180" : "")} />
@@ -1502,7 +1502,7 @@ const TodoListItem = memo(function TodoListItem({
 
         {/* Why it was cancelled, or why the legacy hub auto-closed it */}
         {isCancelled(todo) && cancellationReason(todo) && (
-          <div className="mt-1 truncate text-[11.5px] text-ink-3" data-testid="todo-cancelled-reason">{cancellationReason(todo)}</div>
+          <div className="mt-1 truncate text-xs text-ink-3" data-testid="todo-cancelled-reason">{cancellationReason(todo)}</div>
         )}
         {isAutoDone(todo) && todo.done_reason && (
           <div className="mt-1 truncate text-[11.5px] text-ink-3">{todo.done_reason}</div>
@@ -1985,7 +1985,7 @@ function TodoDetail({
         <span>{t("todos.created_at", { time: clock(todo.created_at) })}</span>
       </div>
       {isCancelled(todo) && cancellationReason(todo) && (
-        <p className="mt-2 text-[12.5px] leading-[1.6] text-ink-3" data-testid="todo-detail-cancelled-reason">
+        <p className="mt-2 text-xs leading-[1.6] text-ink-3" data-testid="todo-detail-cancelled-reason">
           {t("todos.cancelled_reason", { reason: cancellationReason(todo) })}
         </p>
       )}
