@@ -258,7 +258,8 @@ struct ReplyTextTests {
         }
         let first = try rect("开头一段"), steps = try rect("步骤："), last = try rect("结尾一段")
         // The chat's rows: its first line where TextKit put it, the two under the table `shift` lower.
-        v.snap(to: [first.midY, steps.midY + shift, last.midY + shift])
+        v.snap(to: chat([first.midY, steps.midY + shift, last.midY + shift]))
+        v.layoutIfNeeded()
         let moved = [("步骤：", try rect("步骤：")), ("结尾一段", try rect("结尾一段"))]
         #expect(abs(moved[0].1.minY - steps.minY - shift) < 10, "步骤： did not move \(shift): \(steps) → \(moved[0].1)")
         for (words, box) in moved {
@@ -290,10 +291,16 @@ struct ReplyTextTests {
         let one = try rect("第一行"), two = try rect("第二行")
         // The chat folds the quote after two lines; the paragraph after it starts under the card.
         let card = one.minY...(two.maxY + 6)
-        v.snap(to: [one.midY, two.midY, card.upperBound + 20], folds: [card])
+        v.snap(to: chat([one.midY, two.midY, card.upperBound + 20], folds: [card]))
+        v.layoutIfNeeded()
         let at = try #require(v.closestPosition(to: CGPoint(x: two.minX + 4, y: card.upperBound - 2)))
         let i = v.offset(from: v.beginningOfDocument, to: at), r = text.range(of: "第二行")
         #expect(i >= r.location && i <= NSMaxRange(r), "a point at the card's bottom found \(i), not \(r.location)…\(NSMaxRange(r))")
+    }
+
+    /// The chat's lines for all of the words (`LiftSegment`): its rows and folded quotes, no line breaks to follow.
+    private func chat(_ rows: [CGFloat], folds: [ClosedRange<CGFloat>] = []) -> [LiftSegment] {
+        [LiftSegment(part: nil, box: nil, rows: rows, folds: folds, texts: [], tables: [])]
     }
 
     /// Pixels with (nearly) full alpha: the words, not the faint rules and rows.
