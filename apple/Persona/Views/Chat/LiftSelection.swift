@@ -5,6 +5,10 @@ import SwiftUI
 import UIKit
 import UIKit.UIGestureRecognizerSubclass
 #endif
+#if DEBUG
+import os
+private let liftDiag = Logger(subsystem: "persona", category: "lift-diag") // TEMP #5291 diagnosis
+#endif
 
 // MARK: - A lifted message's words, selected where they are (#603)
 
@@ -551,8 +555,44 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
         }
         #if DEBUG
         if LiftLines.on { LiftLines.shared.select = LiftLines.lines(of: self, layout: layout) }
+        diag("layout")
         #endif
     }
+
+    #if DEBUG
+    /// TEMP #5291 diagnosis: its state, and each line whose last glyph reaches its right edge.
+    func diag(_ why: String) {
+        let c = textContainer, inset = textContainerInset
+        let edge = bounds.maxX - inset.right
+        let s = "\(why) held=\(wordsHeld)/\(snapHeld) pending=\(snapPending) picked=\(picked) laidOut=\(laidOut) wrap=\(wrapWidth) "
+            + "bounds=\(bounds) container=\(c.size) len=\(storage.length) fr=\(isFirstResponder) segs=\(segments.count) "
+            + "rows=\(segments.reduce(0) { $0 + $1.rows.count }) held#=\(snapper.held.count) breaks#=\(snapper.breaks.count) "
+            + "targets#=\(snapper.targets.count) shifts#=\(snapper.shifts.count) sel=\(selectedRange) win=\(window != nil)"
+        liftDiag.notice("\(s, privacy: .public)")
+        guard storage.length > 0 else { return }
+        let text = storage.string as NSString
+        var n = 0
+        layout.enumerateLineFragments(forGlyphRange: layout.glyphRange(for: c)) { rect, used, _, range, _ in
+            n += 1
+            var g = NSMaxRange(range) - 1
+            while g >= range.location, self.layout.propertyForGlyph(at: g).contains(.controlCharacter) || self.layout.propertyForGlyph(at: g).contains(.null) { g -= 1 }
+            guard g >= range.location else { return }
+            let box = self.layout.boundingRect(forGlyphRange: NSRange(location: g, length: 1), in: c)
+            guard inset.left + box.maxX >= edge - 0.5 || n <= 3 else { return }
+            let ci = self.layout.characterIndexForGlyph(at: g)
+            let ch = text.substring(with: NSRange(location: ci, length: 1))
+            let style = self.storage.attribute(.paragraphStyle, at: ci, effectiveRange: nil) as? NSParagraphStyle
+            let font = self.storage.attribute(.font, at: ci, effectiveRange: nil) as? UIFont
+            let chars = self.layout.characterRange(forGlyphRange: range, actualGlyphRange: nil)
+            let l = "  \(why) line \(n) g=\(range.location)+\(range.length) last=\(g) ch=\(ch)(\(String(format: "%04X", ch.utf16.first ?? 0))) "
+                + "box=\(box) rect=\(rect) used=\(used) loc=\(self.layout.location(forGlyphAt: g)) prop=\(self.layout.propertyForGlyph(at: g).rawValue) "
+                + "shift=\(self.snapper.shifts[range.location] ?? 0) target=\(self.snapper.targets[range.location] ?? -1) "
+                + "heldAt=\(self.snapper.held.contains(ci)) align=\(style?.alignment.rawValue ?? -1) font=\(font?.pointSize ?? 0) "
+                + "text=\(text.substring(with: chars).replacingOccurrences(of: "\n", with: "⏎"))"
+            liftDiag.notice("\(l, privacy: .public)")
+        }
+    }
+    #endif
 
     /// Its words all laid out, however tall: a text view that does not scroll fits its container to its own height as
     /// its frame is set, and its last line (the line spacing under it past the words' frame) went. true: it had.
@@ -631,12 +671,18 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
                 wordsHeld = false
                 snapHeld = true
                 render(width: wrapWidth)
+                #if DEBUG
+                diag("step words")
+                #endif
                 return true
             }
             if snapHeld { // their lines on the chat's
                 snapHeld = false
                 setNeedsLayout()
                 layoutIfNeeded()
+                #if DEBUG
+                diag("step lines")
+                #endif
                 return true
             }
             guard let picking = range else { // the selection
@@ -646,9 +692,15 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
                 selectedTextRange = r
                 picked = !r.isEmpty
                 range = r
+                #if DEBUG
+                diag("step select")
+                #endif
                 return true
             }
             showMenu(for: picking) // the menu
+            #if DEBUG
+            diag("step menu")
+            #endif
             return false
         }
     }
@@ -678,6 +730,11 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
     }
 
     func textViewDidChangeSelection(_ textView: UITextView) {
+        #if DEBUG
+        let caret = selectedTextRange.map { convert(caretRect(for: $0.end), to: nil) }
+        liftDiag.notice("selection end caret=\(String(describing: caret), privacy: .public) frame=\(String(describing: self.window.map { self.convert(self.bounds, to: $0) }), privacy: .public)")
+        liftDiag.notice("selection \(self.selectedRange, privacy: .public) touched=\(String(describing: self.touched), privacy: .public) finger=\(String(describing: self.finger), privacy: .public)")
+        #endif
         if let touched, draggedEnd == nil, selectedRange.length > 0, selectedRange != touched {
             draggedEnd = selectedRange.location != touched.location ? .start : .end
         }
@@ -696,6 +753,11 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
     // here, and the dragged end of the selection follows the words under the finger as they move.
 
     private func follow(_ at: CGPoint?) {
+        #if DEBUG
+        if (finger == nil) != (at == nil) {
+            liftDiag.notice("finger \(String(describing: at), privacy: .public) sel=\(self.selectedRange, privacy: .public) frame=\(String(describing: self.window.map { self.convert(self.bounds, to: $0) }), privacy: .public)")
+        }
+        #endif
         if finger == nil { touched = selectedRange }
         finger = at
         if at == nil {
@@ -755,6 +817,9 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
     }
 
     func textView(_ textView: UITextView, editMenuForTextIn range: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
+        #if DEBUG
+        liftDiag.notice("menu for \(range, privacy: .public)")
+        #endif
         let picked = ReplyText.copyText(attributedText.attributedSubstring(from: range)).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !picked.isEmpty, let quote else { return UIMenu(children: suggestedActions) }
         let ours = UIMenu(options: .displayInline, children: [
