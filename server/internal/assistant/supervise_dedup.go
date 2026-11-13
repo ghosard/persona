@@ -5,7 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -68,13 +70,26 @@ func (s *Service) reserveSupervision(ctx context.Context, entries []prompts.Supe
 	}
 	var out []prompts.SuperviseEntry
 	var kept []superviseSignal
+	// Read the outbox once for the whole batch. Only real delivery or queue admission acknowledges a stretch. An exact
+	// outbox member under the fingerprint's Key may have crashed after reservation. A different Key retries only while
+	// that fingerprint's stretch is still one of its unacknowledged predecessors; a real predecessor ACK removes it.
+	r := &s.relays
+	r.mu.Lock()
+	if !s.relayLocked(ctx) {
+		r.mu.Unlock()
+		return nil, signals, nil, errors.New("load supervision outbox")
+	}
+	pending := maps.Clone(r.st.SupervisePending)
+	r.mu.Unlock()
 	for i, entry := range entries {
 		key, hash := digestFingerprint(entry, signals[i])
-		// A reservation is not delivery evidence. An unchanged summary under a new stretch Key is a duplicate and is
-		// filtered. The same Key still in the outbox may instead be a crash before delivery or before ACK: retry it.
-		if seen, ok := next[key]; ok && seen.Hash == hash && now.Sub(seen.At) < superviseDedupWindow &&
-			(seen.Key != signals[i].Key || !s.supervisePendingContains(signals[i:i+1])) {
-			continue
+		current, undelivered := pending[signals[i].id()]
+		if seen, ok := next[key]; ok && seen.Hash == hash && now.Sub(seen.At) < superviseDedupWindow {
+			retry := undelivered && current.Key == signals[i].Key &&
+				(seen.Key == signals[i].Key || slices.Contains(current.PendingPredecessors, seen.Key))
+			if !retry {
+				continue
+			}
 		}
 		next[key] = superviseFingerprint{Hash: hash, At: now.UTC(), Key: signals[i].Key}
 		out, kept = append(out, entry), append(kept, signals[i])

@@ -249,6 +249,12 @@ func reserveUndelivered(t *testing.T, s *Service, g superviseSignal) {
 	}
 	s.supervise.dedupMu.Lock()
 	defer s.supervise.dedupMu.Unlock()
+	// sendDigest takes the stretch out of the in-memory gather before reserving it; only the durable outbox then
+	// records that it has not been delivered or admitted to the relay queue.
+	s.supervise.mu.Lock()
+	delete(s.supervise.pending, g.id())
+	s.supervise.sent[g.id()] = g.Key
+	s.supervise.mu.Unlock()
 	_, _, _, err := s.reserveSupervision(context.Background(), []prompts.SuperviseEntry{entry}, []superviseSignal{g}, time.Now())
 	if err != nil {
 		t.Fatal(err)
@@ -274,6 +280,52 @@ func TestConversationDedupReservationDoesNotErasePending(t *testing.T) {
 	}
 }
 
+// A newer stretch can replace the outbox after an older reservation but before delivery. Its different Key must not
+// make that unproven reservation look like a successful send after a restart.
+func TestNewerPendingAfterUndeliveredReservationIsNotDeduplicated(t *testing.T) {
+	st := planUpdateStore{&planMemStore{memStore: &memStore{}, plans: map[string]db.TaskPlanRow{}}}
+	s, f, todo := newSupervisedServiceOn(t, st)
+	s.superviseTimes = superviseTimings{gather: time.Hour, every: time.Hour, urgent: time.Hour}
+	first := superviseSignal{Todo: todo.ID, Kind: sigIdle, Key: "reserved-old", Detail: "要用户决定：选择发布方式", At: time.Now()}
+	s.signal(first)
+	reserveUndelivered(t, s, first)
+	newer := first
+	newer.Key = "pending-new"
+	s.signal(newer)
+	simulateSupervisionRestart(t, s)
+	s.superviseTimes = superviseTimings{gather: 1, every: 1, urgent: 1}
+	s.sendDigest(context.Background())
+	if got := strings.Join(f.noticesTo("conv1"), "\n"); !strings.Contains(got, newer.Detail) {
+		t.Fatalf("the older undelivered reservation hid its newer pending replacement:\n%s", got)
+	}
+	if got := storedSupervisePending(t, s); len(got) != 0 {
+		t.Fatalf("the delivered replacement stayed pending: %+v", got)
+	}
+}
+
+// A replacement gathered after the predecessor's real send but before its ACK is an ordinary duplicate. The ACK must
+// remove that predecessor's retry evidence without acknowledging the newer stretch itself.
+func TestDeliveredPredecessorDoesNotWakeReplacement(t *testing.T) {
+	st := planUpdateStore{&planMemStore{memStore: &memStore{}, plans: map[string]db.TaskPlanRow{}}}
+	s, f, todo := newSupervisedServiceOn(t, st)
+	s.superviseTimes = superviseTimings{gather: time.Hour, every: time.Hour, urgent: time.Hour}
+	first := superviseSignal{Todo: todo.ID, Kind: sigIdle, Key: "sent-old", Detail: "要用户决定：选择发布方式", At: time.Now()}
+	s.signal(first)
+	reserveUndelivered(t, s, first)
+	newer := first
+	newer.Key = "replacement-after-send"
+	s.signal(newer)
+	s.ackSupervisePending([]superviseSignal{first}) // the real send succeeded; only its ACK was delayed
+	s.superviseTimes = superviseTimings{gather: 1, every: 1, urgent: 1}
+	s.sendDigest(context.Background())
+	if got := strings.Join(f.noticesTo("conv1"), "\n"); got != "" {
+		t.Fatalf("the delivered predecessor's replacement woke main again:\n%s", got)
+	}
+	if got := storedSupervisePending(t, s); len(got) != 0 {
+		t.Fatalf("the deduplicated replacement stayed pending: %+v", got)
+	}
+}
+
 // One member's dedup hit cannot hide it in a mixed batch nor let another member's delivery acknowledge it.
 func TestMixedDedupBatchDeliversEveryPending(t *testing.T) {
 	st := planUpdateStore{&planMemStore{memStore: &memStore{}, plans: map[string]db.TaskPlanRow{}}}
@@ -284,6 +336,8 @@ func TestMixedDedupBatchDeliversEveryPending(t *testing.T) {
 	s.signal(old)
 	reserveUndelivered(t, s, old)
 	s.signal(newer)
+	// The first stretch was already extracted for its undelivered attempt; a restart restores both durable members.
+	simulateSupervisionRestart(t, s)
 	s.superviseTimes = superviseTimings{gather: 1, every: 1, urgent: 1}
 	s.sendDigest(context.Background())
 	got := strings.Join(f.noticesTo("conv1"), "\n")

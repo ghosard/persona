@@ -3,6 +3,7 @@ package assistant
 import (
 	"cmp"
 	"context"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -55,6 +56,9 @@ var (
 // the same signal with the same key is told once.
 type superviseSignal struct {
 	Todo, Kind, Key string
+	// PendingPredecessors: keys of earlier stretches of this id replaced before their delivery or queue acknowledgment.
+	// An ACK removes exactly its own Key; a still-present predecessor's dedup reservation is not delivery proof.
+	PendingPredecessors []string
 	// Unreachable: this decision exists because the task leader's agent could not be reached, not because the worker
 	// waits for the user. It stays a decision even though the worker's ledger is not needs_user (task_leader.go).
 	Unreachable      bool
@@ -238,8 +242,21 @@ func (s *Service) updateSupervisePending(change func(map[string]superviseSignal)
 // ackSupervisePendingLocked removes exactly these stretches while relays.mu is held and the queue is saved atomically.
 func ackSupervisePendingLocked(pending map[string]superviseSignal, list []superviseSignal) {
 	for _, g := range list {
-		if cur, ok := pending[g.id()]; ok && cur.Key == g.Key {
-			delete(pending, g.id())
+		if cur, ok := pending[g.id()]; ok {
+			if cur.Key == g.Key {
+				delete(pending, g.id())
+				continue
+			}
+			// The newer stretch remains, but this predecessor really reached delivery or the durable queue. Its key can
+			// no longer make the replacement retry an unchanged fingerprint; other unacknowledged predecessors remain.
+			keys := slices.DeleteFunc(slices.Clone(cur.PendingPredecessors), func(key string) bool { return key == g.Key })
+			if len(keys) != len(cur.PendingPredecessors) {
+				if len(keys) == 0 {
+					keys = nil
+				}
+				cur.PendingPredecessors = keys
+				pending[g.id()] = cur
+			}
 		}
 	}
 }
@@ -260,22 +277,6 @@ func (s *Service) replaceSupervisePending(old, next superviseSignal) {
 			pending[next.id()] = next
 		}
 	})
-}
-
-// supervisePendingContains reports whether any exact stretch still has no delivery or queue acknowledgment.
-func (s *Service) supervisePendingContains(list []superviseSignal) bool {
-	r := &s.relays
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if !s.relayLocked(context.Background()) {
-		return true // unknown is not empty: retry rather than risk losing it
-	}
-	for _, g := range list {
-		if cur, ok := r.st.SupervisePending[g.id()]; ok && cur.Key == g.Key {
-			return true
-		}
-	}
-	return false
 }
 
 // forgetSupervisePending removes signals answered or silenced elsewhere, whether or not they were restored in memory.
@@ -380,8 +381,15 @@ func (s *Service) signalReplacing(old *superviseSignal, g superviseSignal) {
 			}
 		}
 	}
-	b.pending[g.id()] = g
 	s.updateSupervisePending(func(pending map[string]superviseSignal) {
+		// sendDigest may already have taken the older stretch out of b.pending. Its durable outbox entry remains until
+		// real delivery or queue admission, so it is the reliable evidence that this different Key replaces an unACKed one.
+		if cur, ok := pending[g.id()]; ok {
+			g.PendingPredecessors = slices.Clone(cur.PendingPredecessors)
+			if cur.Key != g.Key && !slices.Contains(g.PendingPredecessors, cur.Key) {
+				g.PendingPredecessors = append(g.PendingPredecessors, cur.Key)
+			}
+		}
 		if old != nil {
 			if cur, ok := pending[old.id()]; ok && cur.Key == old.Key {
 				delete(pending, old.id())
@@ -389,6 +397,7 @@ func (s *Service) signalReplacing(old *superviseSignal, g superviseSignal) {
 		}
 		pending[g.id()] = g
 	})
+	b.pending[g.id()] = g
 	s.scheduleDigestLocked(time.Now())
 	b.mu.Unlock()
 }
