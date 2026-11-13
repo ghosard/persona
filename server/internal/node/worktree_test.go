@@ -304,6 +304,54 @@ func TestWorktreeCreateThroughHerdr(t *testing.T) {
 	}
 }
 
+func TestWorktreeCreateFromLinkedCheckoutUsesMainRepository(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		openMain bool
+	}{
+		{name: "main checkout workspace is open", openMain: true},
+		{name: "main checkout workspace is not open"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := worktreeNode(t)
+			linked := filepath.Join(w.home, "elsewhere", "feature-checkout")
+			runPullGit(t, w.repo, "worktree", "add", "-b", "feature", linked)
+			spaces := []any{
+				map[string]any{"workspace_id": "w-linked", "label": "linked", "number": 2, "cwd": linked},
+			}
+			panes := []any{
+				map[string]any{"pane_id": "w-linked:p1", "tab_id": "w-linked:t1", "workspace_id": "w-linked", "cwd": linked},
+			}
+			if tc.openMain {
+				spaces = append([]any{
+					map[string]any{"workspace_id": "w-main", "label": "proj", "number": 1, "cwd": w.repo},
+				}, spaces...)
+				panes = append([]any{
+					map[string]any{"pane_id": "w-main:p1", "tab_id": "w-main:t1", "workspace_id": "w-main", "cwd": w.repo},
+				}, panes...)
+			}
+			w.f.reply("session.snapshot", snapshot(spaces, nil, nil, panes))
+			listSessions(t, w.n)
+			w.f.reset()
+
+			dest := filepath.Join(w.home, "trees", "from-linked")
+			_, err := request(t, w.n, "worktree.create", map[string]any{
+				"cwd": linked, "branch": "task/from-linked", "path": dest,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := map[string]any{"branch": "task/from-linked", "path": dest, "focus": false}
+			if tc.openMain {
+				want["workspace_id"] = "w-main"
+			} else {
+				want["cwd"] = resolved(t, w.repo)
+			}
+			assertTrace(t, w.f.trace("worktree.create"), []string{call("worktree.create", want)})
+		})
+	}
+}
+
 // An empty directory is a place git fills; anything else is refused before herdr hears of it, and so are names and
 // paths that could be read as something else.
 func TestWorktreeCreateRefusals(t *testing.T) {
