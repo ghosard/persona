@@ -1,4 +1,5 @@
 #if DEBUG && os(iOS)
+import BeautifulUI
 import SwiftUI
 
 /// `-showButtonContrast YES` (#6157): a secondary `.themedButton()` on every kind of surface one sits on in the app, for
@@ -9,8 +10,8 @@ import SwiftUI
 ///   The sheet starts at half height and goes to full height with `contrast.expand`.
 ///
 /// Each place has two buttons: one in the accent and one in `Theme.danger`, the two tints call sites give a secondary
-/// button. They are drawn over the app in the saved style, color and look (`-ui.style`, `-ui.color`, `-ui.scheme`), and
-/// each one's identifier is `contrast.<place>.<accent|danger>`.
+/// button. They are drawn over the app in the saved style, color and look (`-ui.style`, `-ui.color`, `-ui.scheme`), with
+/// RootView's tint and type (`rootLook`), and each one's identifier is `contrast.<place>.<accent|danger>`.
 struct ButtonContrastOverlay: View {
     @State private var shown = UserDefaults.standard.bool(forKey: "showButtonContrast")
     @State private var sheet = false
@@ -38,7 +39,8 @@ struct ButtonContrastOverlay: View {
             .padding(.horizontal, Theme.Space.page)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background(StyleSpec.current.usesGlass ? Color(.systemBackground) : Theme.pageBackground)
-            .sheet(isPresented: $sheet) { ButtonContrastSheet() }
+            .sheet(isPresented: $sheet) { ButtonContrastSheet().rootLook() }
+            .rootLook()
         }
     }
 }
@@ -67,6 +69,14 @@ private struct ButtonContrastSheet: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .presentationDetents([.medium, .large], selection: $detent)
         .interactiveDismissDisabled()
+    }
+}
+
+private extension View {
+    /// What RootView gives every screen and this overlay, drawn over it, would miss: the accent as the tint (a secondary
+    /// button's label takes it), the style's font design and BeautifulUI's theme.
+    func rootLook() -> some View {
+        tint(Theme.accent).fontDesign(AppStyle.current.fontDesign).buiTheme(.persona())
     }
 }
 
