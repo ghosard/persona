@@ -179,6 +179,24 @@ func (s *Service) restoreSupervisePending(ctx context.Context) {
 		b.mu.Unlock()
 		return
 	}
+	// A crash between an older queue write and its ACK could leave both. The exact queued stretch wins, even after
+	// the shorter deduplication window has expired; it must not be restored for a second queue admission.
+	var queued []superviseSignal
+	for _, queue := range r.st.Queue {
+		for _, msg := range queue {
+			if msg.Tool == superviseTool && msg.Signals != nil {
+				queued = append(queued, (*msg.Signals)...)
+			}
+		}
+	}
+	before := len(r.st.SupervisePending)
+	ackSupervisePendingLocked(r.st.SupervisePending, queued)
+	if len(r.st.SupervisePending) != before {
+		if len(r.st.SupervisePending) == 0 {
+			r.st.SupervisePending = nil
+		}
+		s.saveRelayLocked()
+	}
 	persisted := make(map[string]superviseSignal, len(r.st.SupervisePending))
 	for id, g := range r.st.SupervisePending {
 		persisted[id] = g
@@ -217,16 +235,47 @@ func (s *Service) updateSupervisePending(change func(map[string]superviseSignal)
 	s.saveRelayLocked()
 }
 
+// ackSupervisePendingLocked removes exactly these stretches while relays.mu is held and the queue is saved atomically.
+func ackSupervisePendingLocked(pending map[string]superviseSignal, list []superviseSignal) {
+	for _, g := range list {
+		if cur, ok := pending[g.id()]; ok && cur.Key == g.Key {
+			delete(pending, g.id())
+		}
+	}
+}
+
 // ackSupervisePending removes exactly the stretches delivered or admitted to the persisted relay queue. A newer
 // signal of the same kind with another Key is left for its own digest.
 func (s *Service) ackSupervisePending(list []superviseSignal) {
 	s.updateSupervisePending(func(pending map[string]superviseSignal) {
-		for _, g := range list {
-			if cur, ok := pending[g.id()]; ok && cur.Key == g.Key {
-				delete(pending, g.id())
-			}
+		ackSupervisePendingLocked(pending, list)
+	})
+}
+
+// replaceSupervisePending atomically turns an undelivered leader signal into the escalation that replaces it.
+func (s *Service) replaceSupervisePending(old, next superviseSignal) {
+	s.updateSupervisePending(func(pending map[string]superviseSignal) {
+		if cur, ok := pending[old.id()]; ok && cur.Key == old.Key {
+			delete(pending, old.id())
+			pending[next.id()] = next
 		}
 	})
+}
+
+// supervisePendingContains reports whether any exact stretch still has no delivery or queue acknowledgment.
+func (s *Service) supervisePendingContains(list []superviseSignal) bool {
+	r := &s.relays
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !s.relayLocked(context.Background()) {
+		return true // unknown is not empty: retry rather than risk losing it
+	}
+	for _, g := range list {
+		if cur, ok := r.st.SupervisePending[g.id()]; ok && cur.Key == g.Key {
+			return true
+		}
+	}
+	return false
 }
 
 // forgetSupervisePending removes signals answered or silenced elsewhere, whether or not they were restored in memory.
@@ -288,6 +337,11 @@ func digestWait(now, last time.Time, pending []superviseSignal, p superviseTimin
 // signal records g for the supervisor, unless the same stretch of state was told already, and sees that the message
 // goes out when it is due.
 func (s *Service) signal(g superviseSignal) {
+	s.signalReplacing(nil, g)
+}
+
+// signalReplacing records g and, when old is still pending, atomically replaces that older stretch in the outbox.
+func (s *Service) signalReplacing(old *superviseSignal, g superviseSignal) {
 	if g.Todo != "" {
 		if t, ok := s.todoNow(g.Todo); ok && s.reporterStopped(context.Background(), t.Origin) {
 			return // /stop silences the reporting task's notices on every route until the user speaks again (#3308)
@@ -327,7 +381,14 @@ func (s *Service) signal(g superviseSignal) {
 		}
 	}
 	b.pending[g.id()] = g
-	s.updateSupervisePending(func(pending map[string]superviseSignal) { pending[g.id()] = g })
+	s.updateSupervisePending(func(pending map[string]superviseSignal) {
+		if old != nil {
+			if cur, ok := pending[old.id()]; ok && cur.Key == old.Key {
+				delete(pending, old.id())
+			}
+		}
+		pending[g.id()] = g
+	})
 	s.scheduleDigestLocked(time.Now())
 	b.mu.Unlock()
 }

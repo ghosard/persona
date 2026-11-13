@@ -1086,7 +1086,7 @@ func TestLeaderResumeFailureEscalatesAndRetries(t *testing.T) {
 	f.mu.Unlock()
 	kept := []superviseSignal{{Todo: w.ID, Kind: sigReview, Key: "review@1", Detail: "做完了"}}
 	text := prompts.RenderWorkerSupervise([]prompts.SuperviseEntry{{ID: w.ID, Title: w.Title, Kind: "review"}})
-	if err := s.sendToLeader(ctx, lead, text, kept); err != nil {
+	if _, err := s.sendToLeader(ctx, lead, text, kept); err != nil {
 		t.Fatalf("the resume is scheduled, not failed synchronously: %v", err)
 	}
 	waitFor(t, "the failed resume to go up", func() bool { return len(f.notices()) >= 1 })
@@ -1119,7 +1119,7 @@ func TestUndeliveredMessageWithNobodyAboveIsRetried(t *testing.T) {
 	f.mu.Unlock()
 	kept := []superviseSignal{{Todo: w.ID, Kind: sigReview, Key: "review@1", Detail: "做完了"}}
 	const text = "Persona · supervision: undelivered"
-	if err := s.sendToLeader(ctx, lead, text, kept); err != nil {
+	if _, err := s.sendToLeader(ctx, lead, text, kept); err != nil {
 		t.Fatal(err)
 	}
 	time.AfterFunc(150*time.Millisecond, func() { f.mu.Lock(); f.failSend = nil; f.mu.Unlock() })

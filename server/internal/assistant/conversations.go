@@ -410,6 +410,13 @@ func (s *Service) queueRelay(to string, msg relayMsg) int {
 	}
 	msg.QueuedAt, msg.Depth = time.Now().UTC(), len(b.st.Queue[to])+1
 	b.st.Queue[to] = append(b.st.Queue[to], msg)
+	if msg.Tool == superviseTool && msg.Signals != nil {
+		// Queue admission and outbox acknowledgment share this one durable write (#5732).
+		ackSupervisePendingLocked(b.st.SupervisePending, *msg.Signals)
+		if len(b.st.SupervisePending) == 0 {
+			b.st.SupervisePending = nil
+		}
+	}
 	s.saveRelayLocked()
 	return len(b.st.Queue[to])
 }

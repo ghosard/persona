@@ -423,10 +423,6 @@ func (s *Service) leaderRoute(g superviseSignal) (lead TodoAgent, handled, reach
 func (s *Service) deliverToLeaderAgent(ctx context.Context, lead TodoAgent, list []superviseSignal, web string, now, prev time.Time) bool {
 	var entries []prompts.SuperviseEntry
 	var kept []superviseSignal
-	offline := false
-	if c, ok := s.session(ctx, lead.MachineID, lead.SessionID); ok && c.Status == proto.StatusOffline {
-		offline = true
-	}
 	for _, g := range list {
 		if e, ok := s.digestEntry(ctx, g, web); ok {
 			entries, kept = append(entries, e), append(kept, g)
@@ -436,6 +432,7 @@ func (s *Service) deliverToLeaderAgent(ctx context.Context, lead TodoAgent, list
 		s.ackSupervisePending(list)
 		return false
 	}
+	valid := slices.Clone(kept)
 	entries, kept, rollback, err := s.reserveSupervision(ctx, entries, kept, now)
 	if err != nil {
 		s.logf("supervise: deduplication unavailable; retrying: %v", err)
@@ -443,21 +440,32 @@ func (s *Service) deliverToLeaderAgent(ctx context.Context, lead TodoAgent, list
 		return false
 	}
 	if len(entries) == 0 {
-		if !offline {
+		if s.supervisePendingContains(valid) {
+			// An offline resume may have crashed after reserving dedup but before its real send. Do not strand or
+			// acknowledge that ambiguous stretch: release the reservation and retry it (at least once).
+			rollback()
+			s.restoreDigest(valid, now, prev)
+		} else {
 			s.ackSupervisePending(list)
 		}
 		return false
 	}
-	if err := s.sendToLeader(ctx, lead, prompts.RenderWorkerSupervise(sortEntries(entries)), kept); err != nil {
+	async, err := s.sendToLeader(ctx, lead, prompts.RenderWorkerSupervise(sortEntries(entries)), kept)
+	if err != nil {
 		s.logf("supervise: %d signal(s) for task leader %s: %v; trying again", len(entries), short(lead.SessionID), err)
 		rollback()
 		s.restoreDigest(kept, now, prev)
 		return false
 	}
-	s.logf("supervise: %d signal(s) to task leader %s", len(entries), short(lead.SessionID))
-	if !offline {
-		s.ackSupervisePending(list)
+	if async {
+		// Starting a resume is not delivery. Its goroutine acknowledges only after the real session.send succeeds;
+		// releasing dedup now also makes a restart before that callback safe to retry.
+		rollback()
+		s.logf("supervise: %d signal(s) for task leader %s: resume started", len(entries), short(lead.SessionID))
+		return true
 	}
+	s.logf("supervise: %d signal(s) to task leader %s", len(entries), short(lead.SessionID))
+	s.ackSupervisePending(list)
 	s.parkedDueTold(ctx, kept)
 	return true
 }
@@ -469,14 +477,14 @@ type leaderUnreachable struct{ err error }
 func (e leaderUnreachable) Error() string { return e.err.Error() }
 func (e leaderUnreachable) Unwrap() error { return e.err }
 
-// sendToLeader sends text, the supervision message for signals kept, into the leader agent's session. A closed agent is
-// resumed in the background (that takes minutes): when that fails the signals are escalated and retried
-// (escalateLeaderMessage). A session its computer does not list, or a failed send, is a leaderUnreachable for the
-// caller, which puts the signals back for the next digest.
-func (s *Service) sendToLeader(ctx context.Context, lead TodoAgent, text string, kept []superviseSignal) error {
+// sendToLeader sends text, the supervision message for signals kept, into the leader agent's session. Its bool is true
+// when a closed agent's resume went to the background instead: that is not delivery yet. A failed resume escalates and
+// retries (escalateLeaderMessage). A session its computer does not list, or a failed online send, is a leaderUnreachable
+// for the caller, which puts the signals back for the next digest.
+func (s *Service) sendToLeader(ctx context.Context, lead TodoAgent, text string, kept []superviseSignal) (bool, error) {
 	c, ok := s.session(ctx, lead.MachineID, lead.SessionID)
 	if !ok {
-		return leaderUnreachable{errors.New("the leader's session is not listed")}
+		return false, leaderUnreachable{errors.New("the leader's session is not listed")}
 	}
 	if c.Status == proto.StatusOffline {
 		go func() {
@@ -487,15 +495,16 @@ func (s *Service) sendToLeader(ctx context.Context, lead TodoAgent, text string,
 			}
 			// A resumed leader is acknowledged only after the real send, never when the goroutine was merely started.
 			s.ackSupervisePending(kept)
+			s.parkedDueTold(context.Background(), kept)
 		}()
-		return nil
+		return true, nil
 	}
 	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 90*time.Second)
 	defer cancel()
 	if err := s.call(sctx, lead.MachineID, DeviceSessionSend, sendParams(lead.SessionID, text, false), nil); err != nil {
-		return leaderUnreachable{err}
+		return false, leaderUnreachable{err}
 	}
-	return nil
+	return false, nil
 }
 
 // sendToLeaderNow is one attempt to put text into the leader's session, resuming it if closed; it waits up to
@@ -517,7 +526,7 @@ func (s *Service) escalateLeaderMessage(lead TodoAgent, kept []superviseSignal, 
 	for _, g := range kept {
 		if w, ok := s.todoNow(g.Todo); ok {
 			if esc := s.escalateLeaderSignal(ctx, g); esc.Todo != "" {
-				s.signal(esc)
+				s.signalReplacing(&g, esc)
 			} else if up, _ := s.supervisorAboveTask(ctx, w); up == "" {
 				s.logf("task leader %s: nobody above it to tell about %s; retrying the leader", short(lead.SessionID), g.Todo)
 			}
@@ -532,6 +541,8 @@ func (s *Service) escalateLeaderMessage(lead TodoAgent, kept []superviseSignal, 
 			}
 			s.logf("task leader %s: trying the undelivered supervision message again", short(lead.SessionID))
 			if err := s.sendToLeaderNow(ctx, lead, text); err == nil {
+				s.ackSupervisePending(kept)
+				s.parkedDueTold(ctx, kept)
 				return
 			}
 			wait = leaderRetryBackoff(wait)

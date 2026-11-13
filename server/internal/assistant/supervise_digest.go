@@ -106,6 +106,7 @@ func (s *Service) sendDigest(ctx context.Context) {
 		}
 	}
 	for _, g := range list {
+		original := g
 		if lead, handled, reachable := s.leaderRoute(g); handled { // never digestTo: a session is no conversation
 			if reachable {
 				key := [2]string{lead.MachineID, lead.SessionID}
@@ -121,6 +122,7 @@ func (s *Service) sendDigest(ctx context.Context) {
 			if g.Todo == "" { // nobody above it: it is told again next time
 				continue
 			}
+			s.replaceSupervisePending(original, g)
 		}
 		to := s.digestTo(ctx, here, g)
 		if to != here.Main {
@@ -370,6 +372,12 @@ func (s *Service) replaceQueuedSupervise(to string, msg relayMsg) bool {
 	for i := range q {
 		if q[i].Tool == superviseTool && (i > 0 || !b.draining[to]) {
 			q[i] = msg.replacing(q[i], time.Now()) // it waited since then (relay_presence.go)
+			if msg.Signals != nil {
+				ackSupervisePendingLocked(b.st.SupervisePending, *msg.Signals)
+				if len(b.st.SupervisePending) == 0 {
+					b.st.SupervisePending = nil
+				}
+			}
 			s.saveRelayLocked()
 			return true
 		}
