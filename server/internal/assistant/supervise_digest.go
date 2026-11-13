@@ -26,6 +26,14 @@ const superviseTool = "supervise"
 // dropped.
 func (s *Service) sendDigest(ctx context.Context) {
 	b := &s.supervise
+	if err := s.ensureTodosLoaded(ctx); err != nil {
+		b.mu.Lock()
+		b.init()
+		s.retryDigestLocked(s.superviseTimings().urgent)
+		b.mu.Unlock()
+		return
+	}
+	s.restoreSupervisePending(ctx)
 	b.dedupMu.Lock()
 	defer b.dedupMu.Unlock()
 	b.mu.Lock()
@@ -166,6 +174,7 @@ func (s *Service) deliverDigest(ctx context.Context, here Settings, to string, l
 		}
 	}
 	if len(entries) == 0 {
+		s.ackSupervisePending(list) // every signal no longer holds, as the in-memory digest already decided
 		return false
 	}
 	entries, kept, rollback, err := s.reserveSupervision(ctx, entries, kept, now)
@@ -175,6 +184,7 @@ func (s *Service) deliverDigest(ctx context.Context, here Settings, to string, l
 		return false
 	}
 	if len(entries) == 0 {
+		s.ackSupervisePending(list) // already covered by the deduplication history
 		b.mu.Lock()
 		if b.last.Equal(now) {
 			b.last = prev
@@ -192,6 +202,7 @@ func (s *Service) deliverDigest(ctx context.Context, here Settings, to string, l
 		if background {
 			s.rememberLegacyBackground(to, kept)
 		}
+		s.ackSupervisePending(list)
 		s.parkedDueTold(ctx, kept) // told for good: not again after a restart (parked.go)
 	}()
 	leader := background || to != here.Main && s.isLeader(ctx, to)
@@ -317,6 +328,13 @@ func (s *Service) queueDigest(to string, msg relayMsg, kept []superviseSignal, a
 			b.pending[id] = joinInbox(g, cur) // the newer item, with the messages of both
 		}
 	}
+	s.updateSupervisePending(func(pending map[string]superviseSignal) {
+		for _, g := range kept {
+			if cur, ok := b.pending[g.id()]; ok {
+				pending[g.id()] = cur
+			}
+		}
+	})
 	s.retryDigestLocked(retry)
 	return false
 }

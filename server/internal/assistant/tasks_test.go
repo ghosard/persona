@@ -512,6 +512,7 @@ func TestAutoFinishLeavesAReopenedTask(t *testing.T) {
 // finished one, a done receipt and a new delivery judgment, still without automatic closure (#5892, #5732).
 func TestClosedTaskReopensWhenItsAgentWorksAgain(t *testing.T) {
 	s, f := newTaskService(t)
+	setSettings(t, s, func(v *Settings) { v.Main = "conv1" })
 	todo := startedTask(t, s, f)
 	ctx := context.Background()
 	agentTurn(s, f, proto.StatusWorking, "", 0)

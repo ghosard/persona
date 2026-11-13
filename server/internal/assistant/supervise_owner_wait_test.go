@@ -64,6 +64,32 @@ func TestNeedsUserJudgmentWaitsAndPushesOnce(t *testing.T) {
 	}
 }
 
+// Needs-user pushes follow the conversation supervision route, not a task leader's machine/session reference.
+// Manual leaders and the legacy background escalate this owner decision to main as well (#5732).
+func TestNeedsUserPushGoesToMainForEverySupervisedTopology(t *testing.T) {
+	s, f := newQuietService(t)
+	setSettings(t, s, func(v *Settings) {
+		v.Leaders = []string{"lead1"}
+		v.BackgroundSupervisor, v.BackgroundSupervisorMachineID = "bg1", "server"
+	})
+	for _, todo := range []Todo{
+		{ID: "manual-leader", Title: "手动 leader", Origin: "lead1", Supervision: &Supervision{Supervisor: "lead1"}},
+		{ID: "leader-worker", Title: "leader worker", Origin: "box/s1", Supervision: &Supervision{Supervisor: "box/s1"}},
+		{ID: "legacy-background", Title: "旧后台", Origin: "conv1", Supervision: &Supervision{Supervisor: "bg1"}},
+	} {
+		s.notifyTaskNeedsUser(context.Background(), todo, time.Now().UTC(), "需要用户本人处理")
+	}
+	pushes := f.pushed()
+	if len(pushes) != 3 {
+		t.Fatalf("needs-user pushes = %+v", pushes)
+	}
+	for _, push := range pushes {
+		if push.SessionID != "conv1" {
+			t.Errorf("push for %s went to %q instead of main", push.ID, push.SessionID)
+		}
+	}
+}
+
 // The explicit owner-action safety net still becomes the visible wait and one push when the model itself failed.
 func TestOwnerWaitSurvivesJudgeFailure(t *testing.T) {
 	s, f := newQuietService(t)

@@ -110,15 +110,13 @@ func (s *Service) toolTaskReview(ctx context.Context, self string, args json.Raw
 	if !ok {
 		return "", fmt.Errorf("no task %q", a.TodoID)
 	}
-	// Main supervises every conversation-dispatched task (#5732). Origin alone no longer lets a side conversation
-	// accept and close it; only main, its currently delegated background reviewer, or a task leader for its own worker
-	// may review. A legacy unsupervised task keeps the old origin fallback.
+	// Main supervises every conversation-dispatched task (#5732). Origin alone never lets a side conversation accept
+	// and close it. The only delegated reviewers are main, an explicitly assigned manual leader, a task leader for its
+	// own worker, or the legacy background with durable evidence for that old task.
 	isMain := s.isMain(ctx, self)
 	background := s.backgroundSupervises(ctx, self, t)
-	allowed := isMain || background || s.mayReviewForLeader(ctx, self, t)
-	if t.Supervision == nil {
-		allowed = allowed || t.Origin == self
-	}
+	manualLeader := t.Supervision != nil && t.Supervision.Supervisor == self && s.isLeader(ctx, self)
+	allowed := isMain || background || manualLeader || s.mayReviewForLeader(ctx, self, t)
 	if t.Origin == "" || !allowed {
 		return "", fmt.Errorf("task %s was not handed out from this conversation", t.ID)
 	}
@@ -142,10 +140,9 @@ func (s *Service) toolTaskReview(ctx context.Context, self string, args json.Raw
 	if a.UserCheck && verdict != reviewAccepted {
 		return "", fmt.Errorf("user_check applies to accepted only")
 	}
-	// A conversation supervises what it handed out (task_plan, quietAgentTask): a task without a ledger
-	// gets none here either, or its signals would go into the main conversation's supervision messages (#4262). It can still
-	// be closed; rework, needs_user and parked are what supervision is for.
-	ledger := t.Supervision != nil || isMain
+	// A legacy task without a ledger stays unsupervised when main accepts or cancels it; closing it must not invent a
+	// new supervision topology. Rework, needs_user and parked require an existing supervised task.
+	ledger := t.Supervision != nil
 	if !ledger && (verdict == reviewRework || verdict == reviewNeedsUser || verdict == reviewParked) {
 		return "", fmt.Errorf("task %s is not supervised: send what is missing to its agent with agent_send, or ask the user in your answer", t.ID)
 	}
@@ -241,9 +238,13 @@ func (s *Service) toolTaskReview(ctx context.Context, self string, args json.Raw
 	b := &s.supervise
 	b.mu.Lock()
 	b.init()
+	var keys []string
 	for _, k := range []string{sigReview, sigIdle, sigUnjudged, sigNeedsYou, sigStalled, sigOrphaned, sigOverdue, sigRecheck, sigUndecidable, sigOwnerCannot, sigParkedDue} {
-		delete(b.pending, t.ID+"|"+k) // reviewed: what waited is answered
+		key := t.ID + "|" + k
+		delete(b.pending, key) // reviewed: what waited is answered
+		keys = append(keys, key)
 	}
+	s.forgetSupervisePending(keys...)
 	b.mu.Unlock()
 	// How it ended against what was asked (task_brief_result.go): each criterion of the brief, as scope changes left them.
 	var result *BriefResult

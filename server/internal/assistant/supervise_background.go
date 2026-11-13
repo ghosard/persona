@@ -226,6 +226,13 @@ func (s *Service) backgroundStranded(ctx context.Context) {
 			b.pending[g.id()] = g
 		}
 	}
+	s.updateSupervisePending(func(pending map[string]superviseSignal) {
+		for _, g := range lost {
+			if cur, ok := b.pending[g.id()]; ok {
+				pending[g.id()] = cur
+			}
+		}
+	})
 	s.retryDigestLocked(s.superviseTimings().urgent)
 }
 

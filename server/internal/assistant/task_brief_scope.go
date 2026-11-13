@@ -237,6 +237,7 @@ func (s *Service) clearOverdue(todoID string) {
 	b.mu.Lock()
 	b.init()
 	delete(b.pending, todoID+"|"+sigOverdue)
+	s.forgetSupervisePending(todoID + "|" + sigOverdue)
 	b.mu.Unlock()
 }
 

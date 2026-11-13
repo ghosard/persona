@@ -115,12 +115,20 @@ func TestOpenLegacySideTaskRehomesToMain(t *testing.T) {
 		t.Fatal(err)
 	}
 	putTodo(s, Todo{ID: "legacy-leader-plan", Origin: "conv1", PlanID: "old-leader-plan", Supervision: &Supervision{Supervisor: "lead1"}})
+	// A leader's old default plan has no explicit supervisor field; its saved conversation identifies the same topology.
+	if err := s.savePlan(ctx, &TaskPlan{ID: "old-default-leader-plan", Conversation: "lead1", Tasks: []PlanTask{{TodoID: "legacy-default-leader-plan"}}}); err != nil {
+		t.Fatal(err)
+	}
+	putTodo(s, Todo{ID: "legacy-default-leader-plan", Origin: "lead1", PlanID: "old-default-leader-plan", Supervision: &Supervision{Supervisor: "lead1"}})
 	cfg := s.settings(ctx)
 	if got := s.digestTo(ctx, cfg, superviseSignal{Todo: "legacy-leader-plan", Kind: sigReview}); got != "conv1" {
 		t.Fatalf("legacy leader-plan still routes to %q", got)
 	}
 	if got := s.digestTo(ctx, cfg, superviseSignal{Todo: "explicit-leader", Kind: sigReview}); got != "lead1" {
 		t.Fatalf("the explicit manual leader route changed to %q", got)
+	}
+	if got := s.digestTo(ctx, cfg, superviseSignal{Todo: "legacy-default-leader-plan", Kind: sigReview}); got != "conv1" {
+		t.Fatalf("legacy default leader-plan still routes to %q", got)
 	}
 	s.rehomeSupervisedTodos(ctx)
 	if got := todoNow(s, todo.ID).Supervision; got.Supervisor != "conv1" || len(got.DoneWhen) != 2 || got.ExpectMinutes != 30 {
@@ -134,6 +142,46 @@ func TestOpenLegacySideTaskRehomesToMain(t *testing.T) {
 	}
 	if got := todoNow(s, "legacy-leader-plan").Supervision.Supervisor; got != "conv1" {
 		t.Fatalf("legacy leader-plan did not rehome to main: %q", got)
+	}
+	if got := todoNow(s, "legacy-default-leader-plan").Supervision.Supervisor; got != "conv1" {
+		t.Fatalf("legacy default leader-plan did not rehome to main: %q", got)
+	}
+}
+
+// Origin alone is not acceptance authority: an old task without a ledger still needs main's explicit acceptance.
+func TestSideOriginCannotAcceptUnsupervisedLegacyTask(t *testing.T) {
+	s, _ := newQuietService(t)
+	ctx := context.Background()
+	todo, err := s.createTodo(ctx, "旧 side 任务", "做完", "side1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runJSON(t, s, "side1", "task_review", map[string]any{"todo_id": todo.ID, "verdict": "accepted"}); err == nil {
+		t.Fatal("the side origin accepted and closed a task without main review")
+	}
+	if todoNow(s, todo.ID).DoneAt != nil {
+		t.Fatal("the unauthorized side review closed the task")
+	}
+	if _, err := runJSON(t, s, "conv1", "task_review", map[string]any{"todo_id": todo.ID, "verdict": "accepted"}); err != nil {
+		t.Fatalf("main could not accept the legacy task: %v", err)
+	}
+}
+
+// The explicit manual-Agent exception is usable end to end: its leader can accept the task it supervises.
+func TestManualLeaderCanAcceptAssignedAgentTask(t *testing.T) {
+	s, _ := newQuietService(t)
+	ctx := context.Background()
+	setSettings(t, s, func(v *Settings) { v.Leaders = []string{"lead1"} })
+	todo, err := s.createTodo(ctx, "手动 Agent 任务", "做完", "lead1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.superviseTodo(ctx, todo.ID, "lead1", []string{"完成"}, 0)
+	if _, err := runJSON(t, s, "lead1", "task_review", map[string]any{"todo_id": todo.ID, "verdict": "accepted"}); err != nil {
+		t.Fatalf("the explicit manual leader could not review its task: %v", err)
+	}
+	if todoNow(s, todo.ID).DoneAt == nil {
+		t.Fatal("the manual leader's acceptance did not close its task")
 	}
 }
 

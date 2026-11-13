@@ -225,6 +225,9 @@ type relayHop struct {
 type relayState struct {
 	Queue map[string][]relayMsg `json:"queue,omitempty"` // by receiver
 	Hops  map[string]relayHop   `json:"hops,omitempty"`  // by conversation: the hop of the message it is working on
+	// SupervisePending: gathered supervision signals not yet delivered or admitted to Queue. It closes the restart
+	// window for states (notably needs_user) that the watch cannot reconstruct (#5732).
+	SupervisePending map[string]superviseSignal `json:"supervise_pending,omitempty"`
 	// LegacyBackground: conversation + "\x00" + todo whose pre-#5732 supervision notice really reached that conversation.
 	// It survives a manager restart, so an old background can finish exactly those tasks and no new main-supervised ones.
 	LegacyBackground map[string]bool `json:"legacy_background,omitempty"`
@@ -268,6 +271,9 @@ func (s *Service) relayLocked(ctx context.Context) bool {
 	}
 	if rs.LegacyBackground == nil {
 		rs.LegacyBackground = map[string]bool{}
+	}
+	if rs.SupervisePending == nil {
+		rs.SupervisePending = map[string]superviseSignal{}
 	}
 	// Upgrade an old queue in place: structured signals are exact; a pre-signals message still carries its todo ids.
 	for conversation, queue := range rs.Queue {

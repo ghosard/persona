@@ -144,5 +144,12 @@ func (s *Service) restoreDigest(signals []superviseSignal, at, prev time.Time) {
 			b.pending[g.id()] = joinInbox(g, cur) // the newer item, with the messages of both
 		}
 	}
+	s.updateSupervisePending(func(pending map[string]superviseSignal) {
+		for _, g := range signals {
+			if cur, ok := b.pending[g.id()]; ok {
+				pending[g.id()] = cur
+			}
+		}
+	})
 	s.retryDigestLocked(s.superviseTimings().urgent)
 }

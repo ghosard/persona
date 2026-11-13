@@ -156,7 +156,11 @@ func (s *Service) noteOwnerWait(ctx context.Context, t Todo, work time.Time, rea
 func (s *Service) notifyTaskNeedsUser(ctx context.Context, t Todo, work time.Time, reason string) {
 	here := s.settings(ctx).MachineID
 	conversation := t.Origin
-	if t.Supervision != nil && t.Supervision.Supervisor != "" {
+	if t.Supervision != nil && s.settings(ctx).Main != "" {
+		// Owner decisions escalate to main from a manual leader, a task-leader Agent and the legacy background too.
+		// In particular, never use a worker's machine/session supervisor reference as an assistant conversation id.
+		conversation = s.settings(ctx).Main
+	} else if t.Supervision != nil && t.Supervision.Supervisor != "" {
 		conversation = t.Supervision.Supervisor
 	}
 	if conversation == "" || s.muted(here, conversation) {
@@ -205,6 +209,7 @@ func (s *Service) supervisedWorking(ctx context.Context, t Todo) {
 	b.mu.Lock()
 	delete(b.pending, t.ID+"|"+sigReview)
 	delete(b.pending, t.ID+"|"+sigParkedDue)
+	s.forgetSupervisePending(t.ID+"|"+sigReview, t.ID+"|"+sigParkedDue)
 	b.mu.Unlock()
 }
 

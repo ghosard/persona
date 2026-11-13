@@ -237,6 +237,7 @@ func (s *Service) ensureTodosLoaded(ctx context.Context) error {
 	b.mu.Unlock()
 	if loaded {
 		s.rehomeSupervisedTodos(ctx)
+		s.restoreSupervisePending(ctx)
 		// The links as read are the ones the marks go by from now on: one that goes away later syncs its machine
 		// again (syncLinkedTodoTokens), even before any of the links changed.
 		s.syncLinkedTodoTokens()

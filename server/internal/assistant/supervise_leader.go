@@ -63,7 +63,7 @@ func (s *Service) legacyLeaderPlanSupervision(ctx context.Context, t Todo) bool 
 		return false
 	}
 	for _, task := range p.Tasks {
-		if task.TodoID == t.ID && task.Supervisor == t.Supervision.Supervisor {
+		if task.TodoID == t.ID && (task.Supervisor == t.Supervision.Supervisor || p.Conversation == t.Supervision.Supervisor) {
 			return true
 		}
 	}

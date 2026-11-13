@@ -121,15 +121,17 @@ func (g superviseSignal) urgent() bool {
 }
 
 type superviseBook struct {
-	mu      sync.Mutex
-	writeMu sync.Mutex // one ledger write at a time (updateSupervision)
-	dedupMu sync.Mutex // serializes digest reservations and delivery
-	dedup   map[string]superviseFingerprint
-	pending map[string]superviseSignal   // by todo|kind
-	sent    map[string]string            // todo|kind → the key last told
-	asks    map[string]string            // todo → what its agent last asked (InteractionRaised)
-	last    time.Time                    // when the last supervision message went out
-	queued  map[string][]superviseSignal // conversation → the signals of the message still waiting in its queue
+	mu            sync.Mutex
+	writeMu       sync.Mutex // one ledger write at a time (updateSupervision)
+	dedupMu       sync.Mutex // serializes digest reservations and delivery
+	dedup         map[string]superviseFingerprint
+	pending       map[string]superviseSignal   // by todo|kind
+	pendingLoadMu sync.Mutex                   // one durable pending restoration at a time
+	pendingLoaded bool                         // the durable pending has been merged into pending
+	sent          map[string]string            // todo|kind → the key last told
+	asks          map[string]string            // todo → what its agent last asked (InteractionRaised)
+	last          time.Time                    // when the last supervision message went out
+	queued        map[string][]superviseSignal // conversation → the signals of the message still waiting in its queue
 	// legacyBackground: conversation + "\x00" + todo → an old notice reached this background conversation, so it may
 	// finish that task. relayState persists the same grant across manager restarts.
 	legacyBackground map[string]bool
@@ -153,6 +155,87 @@ func (b *superviseBook) init() {
 	if b.failSeen == nil {
 		b.failSeen = map[string]failSeen{}
 	}
+}
+
+// restoreSupervisePending merges the durable outbox into the in-memory gather exactly once. A signal that arrived
+// meanwhile wins; a failed read is retried by the digest timer rather than marking the outbox loaded.
+func (s *Service) restoreSupervisePending(ctx context.Context) {
+	b := &s.supervise
+	b.pendingLoadMu.Lock()
+	defer b.pendingLoadMu.Unlock()
+	b.mu.Lock()
+	loaded := b.pendingLoaded
+	b.mu.Unlock()
+	if loaded {
+		return
+	}
+	r := &s.relays
+	r.mu.Lock()
+	if !s.relayLocked(ctx) {
+		r.mu.Unlock()
+		b.mu.Lock()
+		b.init()
+		s.retryDigestLocked(s.superviseTimings().urgent)
+		b.mu.Unlock()
+		return
+	}
+	persisted := make(map[string]superviseSignal, len(r.st.SupervisePending))
+	for id, g := range r.st.SupervisePending {
+		persisted[id] = g
+	}
+	r.mu.Unlock()
+	b.mu.Lock()
+	b.init()
+	for id, g := range persisted {
+		if _, newer := b.pending[id]; !newer {
+			b.pending[id] = g
+		}
+	}
+	b.pendingLoaded = true
+	if len(b.pending) > 0 {
+		s.scheduleDigestLocked(time.Now())
+	}
+	b.mu.Unlock()
+}
+
+// updateSupervisePending changes the durable outbox. Callers may hold supervise.mu: relay code never takes that lock
+// while holding relays.mu. Keeping this per signal, rather than replacing it from pending, preserves in-flight digests.
+func (s *Service) updateSupervisePending(change func(map[string]superviseSignal)) {
+	r := &s.relays
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !s.relayLocked(context.Background()) {
+		return
+	}
+	if r.st.SupervisePending == nil {
+		r.st.SupervisePending = map[string]superviseSignal{}
+	}
+	change(r.st.SupervisePending)
+	if len(r.st.SupervisePending) == 0 {
+		r.st.SupervisePending = nil
+	}
+	s.saveRelayLocked()
+}
+
+// ackSupervisePending removes exactly the stretches delivered or admitted to the persisted relay queue. A newer
+// signal of the same kind with another Key is left for its own digest.
+func (s *Service) ackSupervisePending(list []superviseSignal) {
+	s.updateSupervisePending(func(pending map[string]superviseSignal) {
+		for _, g := range list {
+			if cur, ok := pending[g.id()]; ok && cur.Key == g.Key {
+				delete(pending, g.id())
+			}
+		}
+	})
+}
+
+// forgetSupervisePending removes signals answered or silenced elsewhere, whether or not they were restored in memory.
+func (s *Service) forgetSupervisePending(keys ...string) {
+	s.updateSupervisePending(func(pending map[string]superviseSignal) {
+		for _, key := range keys {
+			delete(pending, key)
+		}
+	})
 }
 
 // superviseTimings are how supervision messages gather and space out (Service.superviseTimes; a zero field: the
@@ -216,6 +299,7 @@ func (s *Service) signal(g superviseSignal) {
 	if g.At.IsZero() {
 		g.At = time.Now()
 	}
+	s.restoreSupervisePending(context.Background())
 	b := &s.supervise
 	b.mu.Lock()
 	b.init()
@@ -243,6 +327,7 @@ func (s *Service) signal(g superviseSignal) {
 		}
 	}
 	b.pending[g.id()] = g
+	s.updateSupervisePending(func(pending map[string]superviseSignal) { pending[g.id()] = g })
 	s.scheduleDigestLocked(time.Now())
 	b.mu.Unlock()
 }

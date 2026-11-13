@@ -307,6 +307,7 @@ func TestCancelStopsAndArchivesAgents(t *testing.T) {
 	})
 	s := ft.s
 	ctx := context.Background()
+	setSettings(t, s, func(v *Settings) { v.Main = "conv1" })
 	todos := map[string]string{}
 	for _, sid := range []string{row.SessionID, other.SessionID} {
 		todo, err := s.createTodo(ctx, "做 "+sid, "做", "conv1", "")

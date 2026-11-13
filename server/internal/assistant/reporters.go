@@ -228,6 +228,7 @@ func (s *Service) dropSupervisionFor(tasks []Todo) int {
 	known := s.todosOf(context.Background(), "*")
 	b := &s.supervise
 	dropped := 0
+	var regather []superviseSignal
 	b.mu.Lock()
 	b.init()
 	for key, g := range b.pending {
@@ -251,8 +252,19 @@ func (s *Service) dropSupervisionFor(tasks []Todo) int {
 		b.setQueuedLocked(to, nil)
 		for _, g := range kept {
 			b.pending[g.id()] = g
+			regather = append(regather, g)
 		}
 	}
+	s.updateSupervisePending(func(pending map[string]superviseSignal) {
+		for key, g := range pending {
+			if ids[g.Todo] {
+				delete(pending, key)
+			}
+		}
+		for _, g := range regather {
+			pending[g.id()] = g
+		}
+	})
 	b.mu.Unlock()
 
 	// Every persisted queue, not just those still indexed in memory. A pre-restart message has no structured signals;
@@ -350,6 +362,11 @@ func (s *Service) dropQueuedSupervisionTasks(conversation string, ids map[string
 			b.pending[g.id()] = g
 		}
 	}
+	s.updateSupervisePending(func(pending map[string]superviseSignal) {
+		for _, g := range regather {
+			pending[g.id()] = g
+		}
+	})
 	b.mu.Unlock()
 	return n
 }

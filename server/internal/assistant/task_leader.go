@@ -423,12 +423,17 @@ func (s *Service) leaderRoute(g superviseSignal) (lead TodoAgent, handled, reach
 func (s *Service) deliverToLeaderAgent(ctx context.Context, lead TodoAgent, list []superviseSignal, web string, now, prev time.Time) bool {
 	var entries []prompts.SuperviseEntry
 	var kept []superviseSignal
+	offline := false
+	if c, ok := s.session(ctx, lead.MachineID, lead.SessionID); ok && c.Status == proto.StatusOffline {
+		offline = true
+	}
 	for _, g := range list {
 		if e, ok := s.digestEntry(ctx, g, web); ok {
 			entries, kept = append(entries, e), append(kept, g)
 		}
 	}
 	if len(entries) == 0 {
+		s.ackSupervisePending(list)
 		return false
 	}
 	entries, kept, rollback, err := s.reserveSupervision(ctx, entries, kept, now)
@@ -438,6 +443,9 @@ func (s *Service) deliverToLeaderAgent(ctx context.Context, lead TodoAgent, list
 		return false
 	}
 	if len(entries) == 0 {
+		if !offline {
+			s.ackSupervisePending(list)
+		}
 		return false
 	}
 	if err := s.sendToLeader(ctx, lead, prompts.RenderWorkerSupervise(sortEntries(entries)), kept); err != nil {
@@ -447,6 +455,9 @@ func (s *Service) deliverToLeaderAgent(ctx context.Context, lead TodoAgent, list
 		return false
 	}
 	s.logf("supervise: %d signal(s) to task leader %s", len(entries), short(lead.SessionID))
+	if !offline {
+		s.ackSupervisePending(list)
+	}
 	s.parkedDueTold(ctx, kept)
 	return true
 }
@@ -472,7 +483,10 @@ func (s *Service) sendToLeader(ctx context.Context, lead TodoAgent, text string,
 			if err := s.sendToLeaderNow(context.Background(), lead, text); err != nil {
 				s.logf("task leader %s: resume: %v", short(lead.SessionID), err)
 				s.escalateLeaderMessage(lead, kept, text)
+				return
 			}
+			// A resumed leader is acknowledged only after the real send, never when the goroutine was merely started.
+			s.ackSupervisePending(kept)
 		}()
 		return nil
 	}
@@ -623,9 +637,13 @@ func (s *Service) leaderReview(ctx context.Context, lead TodoAgent, args json.Ra
 	b := &s.supervise
 	b.mu.Lock()
 	b.init()
+	var keys []string
 	for _, k := range []string{sigReview, sigIdle, sigUnjudged, sigNeedsYou, sigStalled, sigOrphaned} {
-		delete(b.pending, t.ID+"|"+k) // reviewed: what waited is answered
+		key := t.ID + "|" + k
+		delete(b.pending, key) // reviewed: what waited is answered
+		keys = append(keys, key)
 	}
+	s.forgetSupervisePending(keys...)
 	b.mu.Unlock()
 	switch verdict {
 	case reviewAccepted, reviewCancelled:

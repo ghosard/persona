@@ -43,7 +43,7 @@ func TestCancelledTaskStaysClosed(t *testing.T) {
 				}
 				f.setSessions("box", proto.Session{MachineID: "box", SessionID: "s1000000", Status: proto.StatusWorking, State: proto.StateWorking})
 				s.TurnStarted(ctx, SessionRef{MachineID: "box", SessionID: "s1000000"})
-				if _, err := runJSON(t, s, "conv1", "task_review", map[string]any{
+				if _, err := runJSON(t, s, s.settings(ctx).Main, "task_review", map[string]any{
 					"todo_id": todo.ID, "verdict": reviewCancelled, "note": "The report is no longer needed.",
 				}); err != nil {
 					t.Fatal(err)
