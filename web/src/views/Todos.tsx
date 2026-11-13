@@ -627,7 +627,7 @@ export function TodosView({
                 onToggleReleased={() => setShowReleased((v) => !v)}
                 onToggleDone={() => toggleDone(selectedTodo)}
                 onOpenHandover={() => openHandover()}
-                onOpenTodo={openFromList}
+                onOpenTodo={(id) => navigate(calendarRoute(calendarMode, anchor, id))}
                 onDeleteClick={() => askDelete(selectedTodo.id)}
               />
             </div>

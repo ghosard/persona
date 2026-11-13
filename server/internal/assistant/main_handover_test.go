@@ -204,10 +204,10 @@ func TestMainTaskHandoverKeepsMainSupervision(t *testing.T) {
 	if wake := taskCardWake(s, "conv2", todo.ID); wake != wakeActive {
 		t.Fatalf("the transferred task's card wake = %q", wake)
 	}
-	if to := s.digestTo(s.settings(ctx), superviseSignal{Todo: todo.ID, Kind: sigReview}); to != "conv2" {
+	if to := s.digestTo(ctx, s.settings(ctx), superviseSignal{Todo: todo.ID, Kind: sigReview}); to != "conv2" {
 		t.Fatalf("review routed to %q", to)
 	}
-	if to := s.digestTo(s.settings(ctx), superviseSignal{Todo: led.ID, Kind: sigReview}); to != "lead1" {
+	if to := s.digestTo(ctx, s.settings(ctx), superviseSignal{Todo: led.ID, Kind: sigReview}); to != "lead1" {
 		t.Fatalf("the leader's review routed to %q", to)
 	}
 	waitFor(t, "the transferred task's review sent to the new main conversation", func() bool {

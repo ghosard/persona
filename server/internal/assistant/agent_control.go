@@ -196,7 +196,7 @@ func (s *Service) adoptAgentFor(ctx context.Context, self, supervisor string, am
 			return t, false, nil
 		}
 		// Its criteria change only through the brief's log (task_brief_scope.go): the same rules as task_scope.
-		v, err := s.rescope(ctx, t, self, "agent_supervise", doneWhen, expect)
+		v, err := s.rescope(ctx, t, self, supervisor, "agent_supervise", doneWhen, expect)
 		if err != nil {
 			return Todo{}, false, err
 		}
@@ -287,10 +287,11 @@ func (t sendTask) none() bool {
 // handedTask is the task agent_send with a task put the agent on: made now, or self's own that it worked for already
 // (then task's criteria are written once the text went: a send that fails changes nothing).
 type handedTask struct {
-	todo Todo
-	made bool
-	self string
-	task sendTask
+	todo       Todo
+	made       bool
+	self       string
+	supervisor string
+	task       sendTask
 	// wake: its card's (taskCard), wakeResumed when the agent was closed and the message resumes it
 	wake string
 }
@@ -401,12 +402,12 @@ func (s *Service) handTask(ctx context.Context, self string, am Device, c proto.
 		if c.Status == proto.StatusOffline { // closed: the send resumes it first
 			wake = wakeResumed
 		}
-		return &handedTask{todo: todo, made: true, self: self, wake: wake}, nil
+		return &handedTask{todo: todo, made: true, self: self, supervisor: supervisor, wake: wake}, nil
 	}
 	if err := otherWork(c, todo, task); err != nil {
 		return nil, err
 	}
-	return &handedTask{todo: todo, self: self, task: task}, nil
+	return &handedTask{todo: todo, self: self, supervisor: supervisor, task: task}, nil
 }
 
 // sent: the text went. A task made for it gets its card in the conversation; one it was on already gets task's
@@ -424,8 +425,8 @@ func (h *handedTask) sent(ctx context.Context, s *Service, text string) string {
 		}
 	} else {
 		doneWhen, expect := cleanDoneWhen(h.task.DoneWhen), max(0, min(h.task.ExpectMinutes, 24*60))
-		s.releaseHold(ctx, h.todo.ID)                                            // the supervisor sent its agent on: follow-ups go again (decision.go)
-		v, err := s.rescope(ctx, h.todo, h.self, "agent_send", doneWhen, expect) // through the brief's log, as task_scope
+		s.releaseHold(ctx, h.todo.ID)                                                          // the supervisor sent its agent on: follow-ups go again (decision.go)
+		v, err := s.rescope(ctx, h.todo, h.self, h.supervisor, "agent_send", doneWhen, expect) // through the brief's log, as task_scope
 		if err != nil {
 			s.logf("task %s: supervision: %v", h.todo.ID, err)
 			refused = " Its done_when was NOT changed: " + err.Error()

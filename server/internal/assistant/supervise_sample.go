@@ -14,8 +14,8 @@ import (
 // reviewerJudge marks a review the done judge made itself (TaskReview.By).
 const reviewerJudge = "judge"
 
-// reviewSamplePercent is assistant.review_sample_percent: the share of the finished supervised tasks that passed the
-// judge's check whose review still goes to the main conversation; 100 when unset.
+// reviewSamplePercent is assistant.review_sample_percent: the share of passing judge checks marked as spot checks.
+// Every finished task goes to the main conversation regardless; 100 when unset.
 func (s *Service) reviewSamplePercent(ctx context.Context) int {
 	if p := s.settings(ctx).ReviewSamplePercent; p != nil && *p >= 0 && *p <= 100 {
 		return *p

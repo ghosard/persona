@@ -201,6 +201,12 @@ func TestAgentSendTaskFromSideIsSupervisedByMain(t *testing.T) {
 	if _, err := runJSON(t, s, "conv2", "agent_send", map[string]any{"machine": "box", "session_id": "sec00001", "text": "进展如何"}); err != nil {
 		t.Fatal(err)
 	}
+	if got := todoNow(s, todo.ID).Supervision; got == nil || got.Supervisor != "conv1" {
+		t.Fatalf("a repeated side hand-off stole main supervision: %+v", got)
+	}
+	if _, err := runJSON(t, s, "conv2", "task_scope", map[string]any{"todo_id": todo.ID, "change": "do not let the origin accept", "why": "main remains the supervisor", "done_when": []string{"上周对比"}}); err == nil {
+		t.Fatal("the side conversation gained acceptance authority from agent_send")
+	}
 	if todoCount(s) != 1 || todoNow(s, todo.ID).ID != todo.ID {
 		t.Fatalf("duplicate task: %+v", todoNow(s, todo.ID))
 	}

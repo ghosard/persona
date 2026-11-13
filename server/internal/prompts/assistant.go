@@ -647,8 +647,8 @@ func RenderAskLater(a AskLater) string { return render("assistant/ask_later", a)
 type Supervise struct {
 	Level   string
 	Entries []SuperviseEntry
-	// Leader: it goes to a leader conversation, for the tasks it handed out (#3133); Escalated: an entry is a leader's
-	// needs_user, told the main conversation.
+	// Leader: it goes to a leader conversation, for a manual Agent explicitly assigned to it (#5732); Escalated: an
+	// entry is a leader's needs_user, told the main conversation.
 	Leader, Escalated bool
 	// Background: with Leader, it goes to the background supervisor (#4927): the leader's message, for tasks other
 	// conversations handed out, whose cards go from it to the user.
@@ -656,7 +656,7 @@ type Supervise struct {
 	// BackgroundEscalated: with Escalated, one of those entries is the background supervisor's needs_user (#4927): no
 	// leader is named for it.
 	BackgroundEscalated bool
-	// Side: it goes to an ordinary side conversation, for the tasks that conversation handed out itself.
+	// Side: a legacy route to an ordinary side conversation for tasks it supervised before universal main supervision.
 	Side bool
 	// LeaderStuck: an entry is a leader's task stuck over a day (sigLeaderStuck), told the main conversation (#3609).
 	LeaderStuck bool

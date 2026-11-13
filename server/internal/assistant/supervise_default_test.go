@@ -110,6 +110,18 @@ func TestOpenLegacySideTaskRehomesToMain(t *testing.T) {
 	}
 	putTodo(s, Todo{ID: "explicit-leader", Origin: "lead1", Supervision: &Supervision{Supervisor: "lead1"}})
 	putTodo(s, Todo{ID: "leader-worker", Origin: "conv1", Supervision: &Supervision{Supervisor: "box/leader-agent"}})
+	// A pre-#5732 task_plan(supervisor=leader) is not the manual-Agent exception: its saved plan says so.
+	if err := s.savePlan(ctx, &TaskPlan{ID: "old-leader-plan", Tasks: []PlanTask{{TodoID: "legacy-leader-plan", Supervisor: "lead1"}}}); err != nil {
+		t.Fatal(err)
+	}
+	putTodo(s, Todo{ID: "legacy-leader-plan", Origin: "conv1", PlanID: "old-leader-plan", Supervision: &Supervision{Supervisor: "lead1"}})
+	cfg := s.settings(ctx)
+	if got := s.digestTo(ctx, cfg, superviseSignal{Todo: "legacy-leader-plan", Kind: sigReview}); got != "conv1" {
+		t.Fatalf("legacy leader-plan still routes to %q", got)
+	}
+	if got := s.digestTo(ctx, cfg, superviseSignal{Todo: "explicit-leader", Kind: sigReview}); got != "lead1" {
+		t.Fatalf("the explicit manual leader route changed to %q", got)
+	}
 	s.rehomeSupervisedTodos(ctx)
 	if got := todoNow(s, todo.ID).Supervision; got.Supervisor != "conv1" || len(got.DoneWhen) != 2 || got.ExpectMinutes != 30 {
 		t.Fatalf("rehomed ledger = %+v", got)
@@ -119,6 +131,9 @@ func TestOpenLegacySideTaskRehomesToMain(t *testing.T) {
 	}
 	if got := todoNow(s, "leader-worker").Supervision.Supervisor; got != "box/leader-agent" {
 		t.Fatalf("task-leader worker changed to %q", got)
+	}
+	if got := todoNow(s, "legacy-leader-plan").Supervision.Supervisor; got != "conv1" {
+		t.Fatalf("legacy leader-plan did not rehome to main: %q", got)
 	}
 }
 

@@ -231,7 +231,7 @@ func TestDigestTo(t *testing.T) {
 		{"leader's failed start", leaders, superviseSignal{Todo: leads, Kind: sigFailed}, "conv1"},
 		{"gone", leaders, superviseSignal{Todo: "nope", Kind: sigReview}, "conv1"},
 	} {
-		if got := s.digestTo(c.cfg, c.g); got != c.want {
+		if got := s.digestTo(ctx, c.cfg, c.g); got != c.want {
 			t.Errorf("%s: %q, want %q", c.name, got, c.want)
 		}
 	}

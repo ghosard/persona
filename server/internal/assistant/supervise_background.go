@@ -283,11 +283,11 @@ func (s *Service) backgroundFresh(cfg Settings, id string) bool {
 }
 
 // backgroundNeeded: one of the signals list would go to the background supervisor if there were one (digestTo).
-func (s *Service) backgroundNeeded(cfg Settings, list []superviseSignal) bool {
+func (s *Service) backgroundNeeded(ctx context.Context, cfg Settings, list []superviseSignal) bool {
 	const probe = "\x00background"
 	cfg.BackgroundSupervisor, cfg.BackgroundSupervisorMachineID = probe, cfg.MachineID
 	for _, g := range list {
-		if _, handled, _ := s.leaderRoute(g); !handled && s.digestTo(cfg, g) == probe {
+		if _, handled, _ := s.leaderRoute(g); !handled && s.digestTo(ctx, cfg, g) == probe {
 			return true
 		}
 	}

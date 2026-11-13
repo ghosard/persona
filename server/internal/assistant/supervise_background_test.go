@@ -172,6 +172,30 @@ func TestBackgroundReviewIsLimitedToLegacyNotices(t *testing.T) {
 	settleService(t, s)
 }
 
+func TestRehomeKeepsLegacyBackgroundCloseout(t *testing.T) {
+	s, f, todo := newBackgroundService(t)
+	f.known["bg1"] = true
+	f.setSessions("server",
+		proto.Session{SessionID: "conv1", MachineID: "server", Assistant: true, Status: proto.StatusIdle},
+		proto.Session{SessionID: "bg1", MachineID: "server", Assistant: true, Status: proto.StatusIdle})
+	setSettings(t, s, func(v *Settings) { v.BackgroundSupervisor, v.BackgroundSupervisorMachineID = "bg1", "server" })
+	// The old ledger itself names background. Rehoming unrelated side tasks must not take this old closeout away.
+	if _, _, err := s.updateSupervision(context.Background(), todo.ID, func(v *Supervision) bool {
+		v.Supervisor = "bg1"
+		return true
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s.rehomeSupervisedTodos(context.Background())
+	if got := todoNow(s, todo.ID).Supervision.Supervisor; got != "bg1" {
+		t.Fatalf("rehome took the legacy background task to %q", got)
+	}
+	res, err := runJSON(t, s, "bg1", "task_review", map[string]any{"todo_id": todo.ID, "verdict": "accepted", "note": "legacy closeout"})
+	if err != nil || !strings.Contains(res, "accepted and closed") {
+		t.Fatalf("the rehomed legacy background task cannot close: %s %v", res, err)
+	}
+}
+
 func TestLegacyBackgroundNoticeSurvivesRestart(t *testing.T) {
 	st := planUpdateStore{&planMemStore{memStore: &memStore{}, plans: map[string]db.TaskPlanRow{}}}
 	s, f, todo := newBackgroundServiceOn(t, st)
@@ -442,7 +466,7 @@ func TestDigestToWithBackgroundSupervisor(t *testing.T) {
 		{"a task leader's decision for a leader", superviseSignal{Todo: led.ID, Kind: sigDecide, To: "lead1"}, "lead1"},
 		{"a task that is gone", superviseSignal{Todo: "none", Kind: sigReview}, "conv1"},
 	} {
-		if got := s.digestTo(cfg, c.g); got != c.want {
+		if got := s.digestTo(ctx, cfg, c.g); got != c.want {
 			t.Errorf("%s goes to %q, want %q", c.name, got, c.want)
 		}
 	}
@@ -453,10 +477,10 @@ func TestDigestToWithBackgroundSupervisor(t *testing.T) {
 	moved := cfg
 	moved.BackgroundSupervisorMachineID = "laptop"
 	for name, c := range map[string]Settings{"off": off, "moved": moved} {
-		if got := s.digestTo(c, superviseSignal{Todo: todo.ID, Kind: sigReview}); got != "conv1" {
+		if got := s.digestTo(ctx, c, superviseSignal{Todo: todo.ID, Kind: sigReview}); got != "conv1" {
 			t.Errorf("%s: a review goes to %q", name, got)
 		}
-		if got := s.digestTo(c, superviseSignal{Todo: todo.ID, Kind: sigAsk, To: "bg1"}); got != "conv1" {
+		if got := s.digestTo(ctx, c, superviseSignal{Todo: todo.ID, Kind: sigAsk, To: "bg1"}); got != "conv1" {
 			t.Errorf("%s: a card held by the background supervisor goes to %q", name, got)
 		}
 	}

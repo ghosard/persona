@@ -537,7 +537,7 @@ func (s *Service) continueBriefFor(ctx context.Context, self string, previous, t
 		return err
 	}
 	if len(doneWhen) > 0 || expect > 0 {
-		if _, err := s.rescope(ctx, todo, self, "agent_takeover", doneWhen, expect); err != nil {
+		if _, err := s.rescope(ctx, todo, self, self, "agent_takeover", doneWhen, expect); err != nil {
 			s.logf("task %s: takeover scope: %v", todo.ID, err)
 		}
 	}

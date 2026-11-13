@@ -81,7 +81,7 @@ func (s *Service) sendDigest(ctx context.Context) {
 	var leaderOrder []TodoAgent
 	gone := map[string]bool{}      // leaders whose conversation is not there: their signals go to the main one
 	s.rehomeLeaderlessWorkers(ctx) // a worker whose leader's task closed gets a supervisor that can act, before routing
-	if s.backgroundNeeded(here, list) {
+	if s.backgroundNeeded(ctx, here, list) {
 		// The background supervisor is made the first time a signal is for it, and again when it is gone. One that
 		// cannot start leaves here as it was: the gone check below sends its signals to the main conversation.
 		id, was := s.ensureBackground(ctx)
@@ -114,7 +114,7 @@ func (s *Service) sendDigest(ctx context.Context) {
 				continue
 			}
 		}
-		to := s.digestTo(here, g)
+		to := s.digestTo(ctx, here, g)
 		if to != here.Main {
 			if _, seen := gone[to]; !seen {
 				if to == here.BackgroundSupervisor {
