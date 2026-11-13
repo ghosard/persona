@@ -986,10 +986,14 @@ private struct AgentsList: View {
         let _ = rowActions.update(rename: { renamingSession = $0 }, close: { closingSession = $0 }, linkTodo: { linkingSession = $0 },
                                   delete: { deletingSession = $0 })
 
+        // The list goes into the modifier chains as one AnyView, and `observedAgentList` erases it again between its
+        // chains (the whole list, not a row, P6). An unoptimized build gives every one of the ~55 layers a stack slot
+        // holding all the layers under it: generic over the list's full type, these frames took 700 KB of the 1 MB a
+        // device's main thread has (the simulator's has 8), and a Debug build crashed at launch on an iPhone (#4206).
         observedAgentList(
-            agentList(base: base, filtered: filtered, unpinned: unpinned, pinnedAgents: pinnedAgents,
-                      needsYou: needsYou, unreadShown: unreadShown, active: active, quiet: quiet,
-                      tree: tree, byHost: byHost, hasSearchResults: projection.hasSearchResults),
+            AnyView(agentList(base: base, filtered: filtered, unpinned: unpinned, pinnedAgents: pinnedAgents,
+                              needsYou: needsYou, unreadShown: unreadShown, active: active, quiet: quiet,
+                              tree: tree, byHost: byHost, hasSearchResults: projection.hasSearchResults)),
             base: base, interactions: interactions, quiet: quiet, matching: matching)
     }
 
@@ -1194,7 +1198,7 @@ private struct AgentsList: View {
         }
     }
 
-    private func styledAgentList<Content: View>(_ list: Content, base: [Session], interactions: [Interaction]) -> some View {
+    private func styledAgentList(_ list: AnyView, base: [Session], interactions: [Interaction]) -> some View {
         list
         .modifier(AgentsListStyle(capsules: floating, room: ownsTop && shell != nil && railEdge == nil && !compactTop, ownsTop: ownsTop))
         #if os(iOS) || os(visionOS)
@@ -1249,8 +1253,8 @@ private struct AgentsList: View {
         .modifier(AgentsSystemSearch(enabled: !ownsTop && !oneSidebarMode, query: $query, searching: $searching))
     }
 
-    private func observedAgentList<Content: View>(_ content: Content, base: [Session], interactions: [Interaction],
-                                                 quiet: [SpaceGroup], matching: Set<SessionKey>) -> some View {
+    private func observedAgentList(_ content: AnyView, base: [Session], interactions: [Interaction],
+                                   quiet: [SpaceGroup], matching: Set<SessionKey>) -> some View {
         let decorated = styledAgentList(content, base: base, interactions: interactions)
         .refreshable { await model.sessionLists.reload(); await model.refresh() }
         // Whether each machine's herdr runs, while the list is in sight (a modifier of its own: in this chain the
@@ -1272,7 +1276,7 @@ private struct AgentsList: View {
         .confirmClose($closingSession)
         .confirmDeleteSession($deletingSession)
         .nodeActionPrompts()
-        let sheets = decorated
+        let sheets = AnyView(decorated)
         .sheet(item: $creatingChild, onDismiss: {
             guard let child = createdWorktree else { return }
             createdWorktree = nil
@@ -1300,7 +1304,7 @@ private struct AgentsList: View {
                 TodoLinkAgentSheet(space: TodoItem.Space(machineID: group.machineID, space: space))
             }
         }
-        let list = sheets
+        let list = AnyView(sheets)
         .onChange(of: model.visibleSession) { _, key in if key != nil { openedWorkspace = nil } }
         .task(id: listQuery) {
             paginationArmed = false
