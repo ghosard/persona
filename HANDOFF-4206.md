@@ -133,6 +133,13 @@ had a width kept from an earlier drag. Likely the system's split choosing its ov
 changes through `navigationSplitViewColumnWidth`. `SplitNavigation.notePosture` then also reads it as laid over, so a later
 closing is not remembered. Left for discussion with the owner.
 
+**The same on a real iPhone Duo (2026-11-13), and why it looked like a device difference.** On the phone the column lay over
+the dimmed page on its side from launch, not only after a drag: the app had kept `agents.list.width = 480` (the most,
+`Theme.Size.sidebarMax`) from an earlier drag. The simulator screenshots launch with `-agents.list.width 0`, the default.
+Relaunched on the phone with `-agents.list.width 0 -agents.list.closed NO` and turned on its side, the column sat beside the
+page, as in the simulator. So the phone shows this issue, not a difference of its own; a double tap on the handle gives the
+default width back until it is fixed.
+
 ## Experiment, not kept: the system's own divider on the iPad
 
 iPadOS 26 lets a split's divider be dragged by itself (WWDC25 session 282). With `SplitDividerHandle` turned off locally and only
