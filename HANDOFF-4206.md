@@ -144,6 +144,68 @@ iPadOS 26 lets a split's divider be dragged by itself (WWDC25 session 282). With
 So on the iPad the system's divider could replace our handle's resizing, but not its closing past the least or its remembered
 width, and the Duo still needs our handle. The change was reverted; nothing of it is on the branch.
 
+## On a real iPhone Duo
+
+Tried on 2026-11-13: the branch (`58051c95b`) installs on a real iPhone Duo, but **quits as soon as it opens**. Not fixed.
+
+### Getting a Debug build onto the phone
+
+1. **Signing certificate.** A newly set up Mac has no Apple Development certificate. If the account already has one for that
+   machine whose private key is gone (for example after a reinstall), automatic signing stops and asks to revoke it; instead,
+   make a new one in Xcode > Settings > Apple Accounts > the team > Manage Certificates > `+` > Apple Development.
+2. **Intermediate certificate.** If `security find-identity -v -p codesigning` still shows 0 valid identities, the keychain
+   is missing Apple's WWDR G3 intermediate (an old expired WWDR certificate doesn't count). Add it to the login keychain
+   (Apple publishes it on its certificate authority page); the identity then shows as valid.
+3. **Bundle id and team.** Fill `app.bundle_id` and `app.team_id` in `~/.config/persona/config.json` on that Mac with the
+   release app's values, then run `python3 scripts/persona_config.py xcconfig`. This stays on the machine; it never goes
+   into the repository. A placeholder bundle id fails to sign: its App IDs have no App Groups, and the profiles it gets
+   don't match the entitlements.
+4. **Build and install.** `xcodebuild -scheme Persona -configuration Debug -destination 'generic/platform=iOS'
+   -allowProvisioningUpdates build`, then `xcrun devicectl device install app --device <UDID> <Persona.app>`. Over Wi-Fi this
+   works once the phone has been paired and has Developer Mode on; a cable works too. The build replaces the release app on
+   the phone (its data stays). A locked or sleeping phone shows as `unavailable` and can't be installed to.
+
+### The crash on launch
+
+Four crash reports, all the same:
+
+- `EXC_BAD_ACCESS (SIGSEGV)`, `KERN_PROTECTION_FAILURE`, "Could not determine thread index for stack guard region": the
+  main thread ran out of stack, about 260 frames deep. That is not endless recursion; the frames are large.
+- Top of the stack:
+  ```
+  swift::SubstGenericParametersFromMetadata::getMetadata / TypeDecoder::decodeGenericArgs / decodeMangledType
+  swift_getTypeByMangledName(InEnvironment)
+  _resolveKeyPathGenericArgReference / _walkKeyPathPattern / _getKeyPathClassAndInstanceSizeFromPattern
+  _swift_getKeyPath
+  StoredValueBox.value.getter
+  StoredValue.wrappedValue.getter
+  AgentsList.capsules.getter / AgentsList.floating.getter
+  AgentsList.styledAgentList(_:base:interactions:)
+  AgentsList.observedAgentList(_:base:interactions:quiet:matching:)
+  AgentsList.body.getter
+  … about 240 SwiftUI / AttributeGraph frames … PersonaApp.main
+  ```
+  `StoredValueBox` is `@Observable`, so reading `value` builds its KeyPath at run time, and decoding that generic type is
+  what goes past the end of the stack.
+- The same with `SWIFT_OPTIMIZATION_LEVEL=-O` on the Debug build, so it is not the optimization level.
+- The simulators don't crash (their main thread has the Mac's much larger stack). The release 1.0.0 (3920) that was on the
+  phone before doesn't crash this way.
+
+**Suspected cause (not proven):** the branch puts the Agents list deeper in the view tree (`OneSidebar`,
+`SplitNavigation`, `RootView`), so on the phone's smaller main-thread stack the list's first `@StoredValue` read is the
+step that runs out. **Not yet checked whether `main` crashes too:** a Debug build of `main` was ready, but the phone
+stayed unreachable and it was never installed.
+
+### Next steps
+
+1. Install `main` the same way and open it once, to see whether it crashes too.
+2. If only the branch crashes: find which new layers add the depth and cut the nesting, or read the `@StoredValue`s once
+   outside `body` (for example in the parent, passed down as plain values) so no KeyPath is built that deep.
+3. It counts as fixed only after the branch opens on a real phone and the Agents list shows; the simulators can't show this
+   crash.
+
+**The phone now** still has this crashing build; the owner needs to reinstall the release app from TestFlight first.
+
 ## 4. Status
 
 The six screenshots and the montage were retaken on `5eaff049d` (2026-11-13) and checked: the size, one top-left button,
