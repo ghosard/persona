@@ -269,9 +269,12 @@ func (n *Node) worktreeCreate(ctx context.Context, kind, workspace, cwd, branch,
 	}
 	sourceWorkspace, sourceCwd := workspace, ""
 	if repo.mainRoot != "" && h.Kind() == host.Herdr {
-		// herdr starts a new worktree from the main checkout's parent workspace, never from a linked checkout.
-		var sourceErr error
-		if sourceWorkspace, sourceErr = spaceHolding(ctx, h, repo.mainRoot); sourceErr != nil {
+		// herdr starts a new worktree from the main checkout's own workspace, never from a linked checkout.
+		if mainWorkspace, sourceErr := spaceHolding(ctx, h, repo.mainRoot); sourceErr == nil {
+			sourceWorkspace = mainWorkspace
+		}
+		space, ok := n.spaceOf(h.Kind(), sourceWorkspace)
+		if !ok || realPath(space.Cwd) != realPath(repo.mainRoot) {
 			sourceWorkspace, sourceCwd = "", repo.mainRoot
 		}
 	}
@@ -286,12 +289,12 @@ func (n *Node) worktreeCreate(ctx context.Context, kind, workspace, cwd, branch,
 	} else if w, ok := h.(host.Worktreer); ok && w.CanWorktree() {
 		if sourceCwd != "" {
 			cw, ok := h.(interface {
-				CreateWorktreeFromCwd(context.Context, string, string, string) (*host.Created, error)
+				CreateWorktreeFromCwd(context.Context, string, string, string, string) (*host.Created, error)
 			})
 			if !ok {
 				return res, errors.New("This terminal host cannot create a worktree from a directory")
 			}
-			created, err = cw.CreateWorktreeFromCwd(ctx, sourceCwd, branch, dest)
+			created, err = cw.CreateWorktreeFromCwd(ctx, workspace, sourceCwd, branch, dest)
 		} else {
 			created, err = w.CreateWorktree(ctx, sourceWorkspace, branch, dest)
 		}

@@ -303,6 +303,25 @@ func TestHerdrHostRoutesEachCallToItsSession(t *testing.T) {
 	fs.assertUntouched(t)
 }
 
+func TestHerdrHostCreateWorktreeFromCwdStaysInItsSession(t *testing.T) {
+	h, fs := namedHerdr(t, nil)
+	fs.build.reply("worktree.create", map[string]any{"workspace": map[string]any{"workspace_id": "w9"},
+		"tab": map[string]any{"tab_id": "w9:t1"}, "root_pane": map[string]any{"pane_id": "w9:p1"}})
+	created, err := h.CreateWorktreeFromCwd(context.Background(), "@build:w4", "/srv/proj", "b", "/tmp/wt")
+	if err != nil || created.SpaceID != "@build:w9" || created.SlotID != "@build:w9:t1" || created.Pane.ID != "@build:w9:p1" {
+		t.Fatalf("worktree from cwd: %+v %v", created, err)
+	}
+	assertTrace(t, fs.build.trace("worktree.create"), []string{
+		call("worktree.create", map[string]any{"cwd": "/srv/proj", "branch": "b", "path": "/tmp/wt", "focus": false}),
+	})
+	for _, f := range []*fakeHerdr{fs.own, fs.review} {
+		if calls := f.calls(); len(calls) != 0 {
+			t.Errorf("cwd creation left its source session: %v", calls)
+		}
+	}
+	fs.assertUntouched(t)
+}
+
 // A named session that does not answer does not hold up the own server's list: its agents come from its last answer
 // meanwhile, and it is not asked again while a call to it is out.
 func TestNamedSessionThatHangsHoldsNothingUp(t *testing.T) {

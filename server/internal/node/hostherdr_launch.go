@@ -120,14 +120,18 @@ func (h *herdrHost) CreateWorktree(ctx context.Context, space, branch, path stri
 	return out, nil
 }
 
-// CreateWorktreeFromCwd creates a worktree from a main checkout that has no open workspace. Like other new workspaces,
-// it opens on the node's own herdr server.
-func (h *herdrHost) CreateWorktreeFromCwd(ctx context.Context, cwd, branch, path string) (*host.Created, error) {
-	c, err := h.c.WorktreeCreateFromCwd(ctx, cwd, branch, path)
+// CreateWorktreeFromCwd creates a worktree from a main checkout that has no open workspace. sourceSpace selects the
+// herdr session, but only cwd is sent as the repository source.
+func (h *herdrHost) CreateWorktreeFromCwd(ctx context.Context, sourceSpace, cwd, branch, path string) (*host.Created, error) {
+	t, err := h.target(ctx, sourceSpace)
 	if err != nil {
 		return nil, err
 	}
-	out := fromHerdrCreated("", &c.Created)
+	c, err := t.c.WorktreeCreateFromCwd(ctx, cwd, branch, path)
+	if err != nil {
+		return nil, err
+	}
+	out := fromHerdrCreated(t.session, &c.Created)
 	if out.SpaceID == "" {
 		return nil, errors.New("herdr did not return the new workspace")
 	}

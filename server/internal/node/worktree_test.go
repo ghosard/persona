@@ -306,10 +306,11 @@ func TestWorktreeCreateThroughHerdr(t *testing.T) {
 
 func TestWorktreeCreateFromLinkedCheckoutUsesMainRepository(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		openMain bool
+		name          string
+		mainWorkspace string
 	}{
-		{name: "main checkout workspace is open", openMain: true},
+		{name: "main checkout workspace is open", mainWorkspace: "checkout"},
+		{name: "only an ancestor workspace is open", mainWorkspace: "ancestor"},
 		{name: "main checkout workspace is not open"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -322,12 +323,19 @@ func TestWorktreeCreateFromLinkedCheckoutUsesMainRepository(t *testing.T) {
 			panes := []any{
 				map[string]any{"pane_id": "w-linked:p1", "tab_id": "w-linked:t1", "workspace_id": "w-linked", "cwd": linked},
 			}
-			if tc.openMain {
+			mainDir := ""
+			switch tc.mainWorkspace {
+			case "checkout":
+				mainDir = w.repo
+			case "ancestor":
+				mainDir = filepath.Dir(w.repo)
+			}
+			if mainDir != "" {
 				spaces = append([]any{
-					map[string]any{"workspace_id": "w-main", "label": "proj", "number": 1, "cwd": w.repo},
+					map[string]any{"workspace_id": "w-main", "label": "proj", "number": 1, "cwd": mainDir},
 				}, spaces...)
 				panes = append([]any{
-					map[string]any{"pane_id": "w-main:p1", "tab_id": "w-main:t1", "workspace_id": "w-main", "cwd": w.repo},
+					map[string]any{"pane_id": "w-main:p1", "tab_id": "w-main:t1", "workspace_id": "w-main", "cwd": mainDir},
 				}, panes...)
 			}
 			w.f.reply("session.snapshot", snapshot(spaces, nil, nil, panes))
@@ -342,7 +350,7 @@ func TestWorktreeCreateFromLinkedCheckoutUsesMainRepository(t *testing.T) {
 				t.Fatal(err)
 			}
 			want := map[string]any{"branch": "task/from-linked", "path": dest, "focus": false}
-			if tc.openMain {
+			if tc.mainWorkspace == "checkout" {
 				want["workspace_id"] = "w-main"
 			} else {
 				want["cwd"] = resolved(t, w.repo)
