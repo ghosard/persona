@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/nwverse/persona/server/internal/db"
+	"github.com/nwverse/persona/server/internal/prompts"
 	"github.com/nwverse/persona/server/internal/proto"
 )
 
@@ -22,6 +23,29 @@ func storedSupervisePending(t *testing.T, s *Service) map[string]superviseSignal
 		t.Fatal(err)
 	}
 	return state.Pending
+}
+
+// simulateSupervisionRestart clears memory only after digest and restoration can no longer use the old state.
+// Replacing the whole book would replace its mutexes while timers still reference them.
+func simulateSupervisionRestart(t *testing.T, s *Service) {
+	t.Helper()
+	b := &s.supervise
+	b.pendingLoadMu.Lock()
+	b.dedupMu.Lock()
+	b.mu.Lock()
+	if b.timer != nil {
+		b.timer.Stop()
+	}
+	b.timer, b.timerAt = nil, time.Time{}
+	b.pending, b.pendingLoaded, b.sent, b.dedup = nil, false, nil, nil
+	b.queued, b.last, b.asks, b.hold, b.visible = nil, time.Time{}, nil, nil, nil
+	b.legacyBackground, b.failSeen = nil, nil
+	b.mu.Unlock()
+	b.dedupMu.Unlock()
+	b.pendingLoadMu.Unlock()
+	s.relays.mu.Lock()
+	s.relays.loaded = false
+	s.relays.mu.Unlock()
 }
 
 // A needs-user state produces no new watch signal. Its gathered notification must therefore survive a restart before
@@ -44,11 +68,8 @@ func TestNeedsUserPendingSurvivesRestartBeforeDigest(t *testing.T) {
 	}
 
 	// A process restart loses the in-memory book and relay's loaded mark, not the shared store.
-	s.supervise = superviseBook{}
+	simulateSupervisionRestart(t, s)
 	s.superviseTimes = superviseTimings{gather: 1, every: 1, urgent: 1} // due immediately for the post-restart digest
-	s.relays.mu.Lock()
-	s.relays.loaded = false
-	s.relays.mu.Unlock()
 	s.sendDigest(ctx)
 	if got := strings.Join(f.noticesTo("conv1"), "\n"); !strings.Contains(got, todo.ID) || !strings.Contains(got, "选择发布方式") {
 		t.Fatalf("the restored needs-user signal was not delivered to main:\n%s", got)
@@ -181,10 +202,7 @@ func TestQueuedSupervisionAndOutboxAreAtomic(t *testing.T) {
 	}
 	// Reproduce the pre-fix crash window: both the durable queue and outbox contain the exact stretch.
 	s.updateSupervisePending(func(pending map[string]superviseSignal) { pending[g.id()] = g })
-	s.supervise = superviseBook{}
-	s.relays.mu.Lock()
-	s.relays.loaded = false
-	s.relays.mu.Unlock()
+	simulateSupervisionRestart(t, s)
 	s.restoreSupervisePending(context.Background())
 	if got := storedSupervisePending(t, s); len(got) != 0 {
 		t.Fatalf("the queued signal was not reconciled from the outbox: %+v", got)
@@ -197,8 +215,8 @@ func TestQueuedSupervisionAndOutboxAreAtomic(t *testing.T) {
 	}
 }
 
-// A real send succeeded but its ACK was lost. On restart an offline dedup hit retries rather than stranding the outbox.
-func TestOfflineLeaderDedupHitRestoresPending(t *testing.T) {
+// A real send succeeded but its ACK was lost. On restart an offline dedup hit retries the real send instead of stranding it.
+func TestOfflineLeaderDedupHitRetriesPending(t *testing.T) {
 	st := planUpdateStore{&planMemStore{memStore: &memStore{}, plans: map[string]db.TaskPlanRow{}}}
 	s, f, todo := newSupervisedServiceOn(t, st)
 	s.superviseTimes = superviseTimings{gather: time.Hour, every: time.Hour, urgent: time.Hour}
@@ -211,22 +229,93 @@ func TestOfflineLeaderDedupHitRestoresPending(t *testing.T) {
 	}
 	s.updateSupervisePending(func(pending map[string]superviseSignal) { pending[g.id()] = g }) // ACK lost after that send
 	f.setSessions("box", proto.Session{MachineID: "box", SessionID: "s1", Status: proto.StatusOffline})
-	s.supervise = superviseBook{}
-	s.relays.mu.Lock()
-	s.relays.loaded = false
-	s.relays.mu.Unlock()
+	simulateSupervisionRestart(t, s)
 	s.restoreSupervisePending(context.Background())
 	s.supervise.mu.Lock()
 	s.supervise.pending = map[string]superviseSignal{} // sendDigest took the stretch out for this delivery attempt
 	s.supervise.mu.Unlock()
-	if s.deliverToLeaderAgent(context.Background(), lead, []superviseSignal{g}, testWeb, time.Now(), time.Time{}) {
-		t.Fatal("a deduplicated offline delivery unexpectedly ran")
+	if !s.deliverToLeaderAgent(context.Background(), lead, []superviseSignal{g}, testWeb, time.Now(), time.Time{}) {
+		t.Fatal("the deduplicated offline signal did not enter its real-send retry")
 	}
-	s.supervise.mu.Lock()
-	_, restored := s.supervise.pending[g.id()]
-	s.supervise.mu.Unlock()
-	if !restored || storedSupervisePending(t, s)[g.id()].Key != g.Key {
-		t.Fatal("the offline dedup hit stranded the signal instead of retrying it")
+	waitFor(t, "the offline dedup retry's real-send acknowledgment", func() bool { return len(storedSupervisePending(t, s)) == 0 })
+}
+
+// reserveUndelivered simulates a crash after dedup was reserved but before any delivery or queue admission.
+func reserveUndelivered(t *testing.T, s *Service, g superviseSignal) {
+	t.Helper()
+	entry, ok := s.digestEntry(context.Background(), g, testWeb)
+	if !ok {
+		t.Fatal("the test signal is not renderable")
+	}
+	s.supervise.dedupMu.Lock()
+	defer s.supervise.dedupMu.Unlock()
+	_, _, _, err := s.reserveSupervision(context.Background(), []prompts.SuperviseEntry{entry}, []superviseSignal{g}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A dedup reservation is not delivery evidence: a still-pending needs-user signal must be delivered after restart.
+func TestConversationDedupReservationDoesNotErasePending(t *testing.T) {
+	st := planUpdateStore{&planMemStore{memStore: &memStore{}, plans: map[string]db.TaskPlanRow{}}}
+	s, f, todo := newSupervisedServiceOn(t, st)
+	s.superviseTimes = superviseTimings{gather: time.Hour, every: time.Hour, urgent: time.Hour}
+	g := superviseSignal{Todo: todo.ID, Kind: sigIdle, Key: "reserved-not-delivered", Detail: "要用户决定：选择发布方式", At: time.Now()}
+	s.signal(g)
+	reserveUndelivered(t, s, g)
+	simulateSupervisionRestart(t, s)
+	s.superviseTimes = superviseTimings{gather: 1, every: 1, urgent: 1}
+	s.sendDigest(context.Background())
+	if got := strings.Join(f.noticesTo("conv1"), "\n"); !strings.Contains(got, "选择发布方式") {
+		t.Fatalf("a dedup reservation erased the undelivered signal:\n%s", got)
+	}
+	if got := storedSupervisePending(t, s); len(got) != 0 {
+		t.Fatalf("the delivered signal stayed pending: %+v", got)
+	}
+}
+
+// One member's dedup hit cannot hide it in a mixed batch nor let another member's delivery acknowledge it.
+func TestMixedDedupBatchDeliversEveryPending(t *testing.T) {
+	st := planUpdateStore{&planMemStore{memStore: &memStore{}, plans: map[string]db.TaskPlanRow{}}}
+	s, f, todo := newSupervisedServiceOn(t, st)
+	s.superviseTimes = superviseTimings{gather: time.Hour, every: time.Hour, urgent: time.Hour}
+	old := superviseSignal{Todo: todo.ID, Kind: sigIdle, Key: "mixed-old", Detail: "旧的用户决定", At: time.Now()}
+	newer := superviseSignal{Todo: todo.ID, Kind: sigUnjudged, Key: "mixed-new", Detail: "新的未判断停止", At: time.Now()}
+	s.signal(old)
+	reserveUndelivered(t, s, old)
+	s.signal(newer)
+	s.superviseTimes = superviseTimings{gather: 1, every: 1, urgent: 1}
+	s.sendDigest(context.Background())
+	got := strings.Join(f.noticesTo("conv1"), "\n")
+	if !strings.Contains(got, old.Detail) || !strings.Contains(got, newer.Detail) {
+		t.Fatalf("the mixed batch dropped a pending member:\n%s", got)
+	}
+	if got := storedSupervisePending(t, s); len(got) != 0 {
+		t.Fatalf("the mixed batch left delivered members pending: %+v", got)
+	}
+}
+
+// Task leaders use the same rule for mixed batches, including an older dedup-reserved member.
+func TestTaskLeaderMixedDedupBatchDeliversEveryPending(t *testing.T) {
+	st := planUpdateStore{&planMemStore{memStore: &memStore{}, plans: map[string]db.TaskPlanRow{}}}
+	s, f, todo := newSupervisedServiceOn(t, st)
+	s.superviseTimes = superviseTimings{gather: time.Hour, every: time.Hour, urgent: time.Hour}
+	f.setSessions("box", proto.Session{MachineID: "box", SessionID: "s1", Status: proto.StatusWorking, State: proto.StateWorking})
+	old := superviseSignal{Todo: todo.ID, Kind: sigIdle, Key: "leader-mixed-old", Detail: "旧的 worker 决定", At: time.Now()}
+	newer := superviseSignal{Todo: todo.ID, Kind: sigUnjudged, Key: "leader-mixed-new", Detail: "新的 worker 停止", At: time.Now()}
+	s.signal(old)
+	reserveUndelivered(t, s, old)
+	s.signal(newer)
+	lead := TodoAgent{MachineID: "box", SessionID: "s1"}
+	if !s.deliverToLeaderAgent(context.Background(), lead, []superviseSignal{old, newer}, testWeb, time.Now(), time.Time{}) {
+		t.Fatal("the mixed leader batch was not delivered")
+	}
+	messages := deliveredTo(f, "s1")
+	if len(messages) == 0 || !strings.Contains(messages[len(messages)-1], old.Detail) || !strings.Contains(messages[len(messages)-1], newer.Detail) {
+		t.Fatalf("the leader's mixed batch dropped a member: %q", messages)
+	}
+	if got := storedSupervisePending(t, s); len(got) != 0 {
+		t.Fatalf("the leader's mixed batch left delivered members pending: %+v", got)
 	}
 }
 
@@ -251,10 +340,7 @@ func TestStopReportingDropsPersistedPending(t *testing.T) {
 	if got := storedSupervisePending(t, s)[g.id()]; got.Key != g.Key {
 		t.Fatal("the test signal was not persisted")
 	}
-	s.supervise = superviseBook{}
-	s.relays.mu.Lock()
-	s.relays.loaded = false
-	s.relays.mu.Unlock()
+	simulateSupervisionRestart(t, s)
 	if w := serve(s, "POST", "/api/v1/assistant/conversations/lark1/stop", ""); w.Code != 200 {
 		t.Fatalf("%d %s", w.Code, w.Body)
 	}

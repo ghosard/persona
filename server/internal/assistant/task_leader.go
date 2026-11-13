@@ -432,7 +432,6 @@ func (s *Service) deliverToLeaderAgent(ctx context.Context, lead TodoAgent, list
 		s.ackSupervisePending(list)
 		return false
 	}
-	valid := slices.Clone(kept)
 	entries, kept, rollback, err := s.reserveSupervision(ctx, entries, kept, now)
 	if err != nil {
 		s.logf("supervise: deduplication unavailable; retrying: %v", err)
@@ -440,14 +439,7 @@ func (s *Service) deliverToLeaderAgent(ctx context.Context, lead TodoAgent, list
 		return false
 	}
 	if len(entries) == 0 {
-		if s.supervisePendingContains(valid) {
-			// An offline resume may have crashed after reserving dedup but before its real send. Do not strand or
-			// acknowledge that ambiguous stretch: release the reservation and retry it (at least once).
-			rollback()
-			s.restoreDigest(valid, now, prev)
-		} else {
-			s.ackSupervisePending(list)
-		}
+		s.ackSupervisePending(list)
 		return false
 	}
 	async, err := s.sendToLeader(ctx, lead, prompts.RenderWorkerSupervise(sortEntries(entries)), kept)

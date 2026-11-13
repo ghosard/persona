@@ -18,6 +18,7 @@ const superviseDedupWindow = 30 * time.Minute
 type superviseFingerprint struct {
 	Hash string    `json:"hash"`
 	At   time.Time `json:"at"`
+	Key  string    `json:"key,omitempty"` // the stretch reserved by this fingerprint; empty before #5732
 }
 
 func digestFingerprint(e prompts.SuperviseEntry, g superviseSignal) (string, string) {
@@ -69,10 +70,13 @@ func (s *Service) reserveSupervision(ctx context.Context, entries []prompts.Supe
 	var kept []superviseSignal
 	for i, entry := range entries {
 		key, hash := digestFingerprint(entry, signals[i])
-		if seen, ok := next[key]; ok && seen.Hash == hash && now.Sub(seen.At) < superviseDedupWindow {
+		// A reservation is not delivery evidence. An unchanged summary under a new stretch Key is a duplicate and is
+		// filtered. The same Key still in the outbox may instead be a crash before delivery or before ACK: retry it.
+		if seen, ok := next[key]; ok && seen.Hash == hash && now.Sub(seen.At) < superviseDedupWindow &&
+			(seen.Key != signals[i].Key || !s.supervisePendingContains(signals[i:i+1])) {
 			continue
 		}
-		next[key] = superviseFingerprint{Hash: hash, At: now.UTC()}
+		next[key] = superviseFingerprint{Hash: hash, At: now.UTC(), Key: signals[i].Key}
 		out, kept = append(out, entry), append(kept, signals[i])
 	}
 	if len(out) == 0 {
