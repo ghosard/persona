@@ -106,9 +106,13 @@ private struct SelectableInLift: ViewModifier {
             .readingShownWords { shown in
                 if let select, let menu {
                     GeometryReader { geo in
+                        // Past the words by a handle's reach on every side, the words where they are (its inset): a
+                        // knob over the first line or under the last is in it, to be dragged.
+                        let reach = Theme.Lift.handleReach
                         LiftTextView(text: source, words: words, parts: parts ?? [], select: select, menu: menu, place: place,
                                      segments: shown.segments)
-                            .frame(width: geo.size.width, height: geo.size.height)
+                            .frame(width: geo.size.width + 2 * reach, height: geo.size.height + 2 * reach)
+                            .offset(x: -reach, y: -reach)
                     }
                 }
             }
@@ -222,6 +226,8 @@ private struct LiftTextView: UIViewRepresentable {
     func makeUIView(context: Context) -> LiftUITextView {
         let v = LiftUITextView()
         v.holdWords()
+        let reach = Theme.Lift.handleReach
+        v.textContainerInset = UIEdgeInsets(top: reach, left: reach, bottom: reach, right: reach)
         return v
     }
 
@@ -370,6 +376,7 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
                 partRanges[n] = partRanges[n].map { NSUnionRange($0, range) } ?? range
             }
         }
+        _ = followChat() // before anything lays them out
         snapSoon()
         #if DEBUG
         setNeedsLayout() // `LiftLines`
@@ -437,20 +444,11 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
         snapper.hidden = []
         snapper.shifts = [:]
         let split = !parts.isEmpty
-        func range(of s: LiftSegment) -> NSRange? {
-            guard let p = s.part else { return all }
-            return split ? partRanges[p] : nil
+        // A line TextKit 1 laid out once and now breaks elsewhere keeps a stale end (its last glyph's box at the line's
+        // right edge, zero wide): its glyphs are made again.
+        if let moved = followChat() {
+            layout.invalidateGlyphs(forCharacterRange: moved, changeInLength: 0, actualCharacterRange: nil)
         }
-        let paragraphs = wrapping
-        var held = IndexSet(), breaks = IndexSet()
-        for s in segments {
-            guard let r = range(of: s) else { continue }
-            let mine = paragraphs.filter { $0.location >= r.location && NSMaxRange($0) <= NSMaxRange(r) }
-            let f = LiftLayout.follow(s.texts, paragraphs: mine)
-            held.formUnion(f.held)
-            breaks.formUnion(f.at)
-        }
-        (snapper.held, snapper.breaks) = (held, breaks)
         layout.invalidateLayout(forCharacterRange: all, actualCharacterRange: nil)
         guard segments.contains(where: { !$0.rows.isEmpty }), storage.length > 0 else { return }
         layout.ensureLayout(for: textContainer)
@@ -490,7 +488,7 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
             let boxes = segments.compactMap { s in s.part.flatMap { p in s.box.map { (part: p, box: $0) } } }
             for l in found where !boxes.contains(where: { $0.part == l.part }) {
                 let before = boxes.last(where: { $0.part < l.part })?.box.upperBound ?? 0
-                let after = boxes.first(where: { $0.part > l.part })?.box.lowerBound ?? max(bounds.height, before)
+                let after = boxes.first(where: { $0.part > l.part })?.box.lowerBound ?? max(inside.height, before)
                 targets[l.start] = (before + after) / 2
                 hidden.insert(l.start)
             }
@@ -501,6 +499,35 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
         layout.invalidateLayout(forCharacterRange: all, actualCharacterRange: nil)
         layout.ensureLayout(for: textContainer)
         setNeedsDisplay()
+    }
+
+    /// Where its lines break, as the chat's do (`LiftLayout.follow`), in all of the words or in each part laid out: set
+    /// before its words are first laid out (`render`). Changed, the characters between the first and the last that
+    /// changed; nil: as they were.
+    private func followChat() -> NSRange? {
+        let all = NSRange(location: 0, length: storage.length)
+        let split = !parts.isEmpty
+        let paragraphs = wrapping
+        var held = IndexSet(), breaks = IndexSet()
+        func range(of s: LiftSegment) -> NSRange? {
+            guard let p = s.part else { return all }
+            return split ? partRanges[p] : nil
+        }
+        for s in segments {
+            guard let r = range(of: s) else { continue }
+            let mine = paragraphs.filter { $0.location >= r.location && NSMaxRange($0) <= NSMaxRange(r) }
+            let f = LiftLayout.follow(s.texts, paragraphs: mine)
+            held.formUnion(f.held)
+            breaks.formUnion(f.at)
+        }
+        let changed = held.symmetricDifference(snapper.held).union(breaks.symmetricDifference(snapper.breaks))
+        (snapper.held, snapper.breaks) = (held, breaks)
+        guard let first = changed.first, let last = changed.last, first < all.length else { return nil }
+        // A paragraph's whole lines: from the start of the first's to the end of the last's.
+        let text = storage.string as NSString
+        let from = text.paragraphRange(for: NSRange(location: first, length: 0))
+        let to = text.paragraphRange(for: NSRange(location: min(last, all.length - 1), length: 0))
+        return NSUnionRange(from, to)
     }
 
     /// How far back a wrapped line goes to start at its paragraph's indent, as the chat's does; nil: it does. Laid out
@@ -537,8 +564,11 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
     /// Where the words under it wrap: at the width they were offered, or (none known) at their own.
     private var wrapWidth: CGFloat {
         if let w = place?.offer?.width, w.isFinite, w > 0 { return w }
-        return bounds.width
+        return inside.width
     }
+
+    /// Its bounds inside its inset: where the words are.
+    private var inside: CGRect { bounds.inset(by: textContainerInset) }
 
     override func layoutSubviews() {
         guard !wordsHeld else { return super.layoutSubviews() }
@@ -612,7 +642,7 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
         let start = offset(from: beginningOfDocument, to: range.start), end = offset(from: beginningOfDocument, to: range.end)
         let text = storage.string as NSString
         guard end > start, end <= text.length, let container = layout.textContainers.first else { return super.selectionRects(for: range) }
-        let inset = textContainerInset, right = inset.left + min(container.size.width, bounds.width)
+        let inset = textContainerInset, right = inset.left + min(container.size.width, inside.width)
         var out: [LineSelectionRect] = []
         let glyphs = layout.glyphRange(forCharacterRange: NSRange(location: start, length: end - start), actualCharacterRange: nil)
         layout.enumerateLineFragments(forGlyphRange: glyphs) { line, used, _, lineGlyphs, _ in
@@ -663,7 +693,7 @@ final class LiftUITextView: UITextView, UITextViewDelegate, UIEditMenuInteractio
         var range: UITextRange?
         steps.run { [weak self] in
             guard let self else { return false }
-            guard window != nil, bounds.width > 0 else {
+            guard window != nil, inside.width > 0 else {
                 tries -= 1
                 return tries > 0
             }
