@@ -39,6 +39,8 @@ The commits of the last stretch (`git log --first-parent`):
 | `5eaff049d` | **The open Duo's sidebar is 320 pt** (below). |
 | `64b5b90ad` | Handoff after the merge and the width change. |
 | `234ba0b59` | **The column follows the handle while it is dragged** on the Duo too (below). Refs #2624. |
+| `d2b2bf465` | Handoff: the branch quit at launch on a real iPhone Duo. |
+| `ea58226d4` | **The Agents list no longer overflows a device's main-thread stack** ("On a real iPhone Duo" below). |
 
 ### The color fix (`3570fe23a`)
 
@@ -146,7 +148,8 @@ width, and the Duo still needs our handle. The change was reverted; nothing of i
 
 ## On a real iPhone Duo
 
-Tried on 2026-11-13: the branch (`58051c95b`) installs on a real iPhone Duo, but **quits as soon as it opens**. Not fixed.
+Tried on 2026-11-13: `58051c95b` and `d2b2bf465` installed on a real iPhone Duo **quit as soon as they open**. **Fixed in
+`ea58226d4`**: the branch now launches on the phone, the one sidebar and its Agents list show, upright and on its side.
 
 ### Getting a Debug build onto the phone
 
@@ -165,46 +168,62 @@ Tried on 2026-11-13: the branch (`58051c95b`) installs on a real iPhone Duo, but
    works once the phone has been paired and has Developer Mode on; a cable works too. The build replaces the release app on
    the phone (its data stays). A locked or sleeping phone shows as `unavailable` and can't be installed to.
 
-### The crash on launch
+### The crash on launch and its cause
 
-Four crash reports, all the same:
+Every crash report is the same: `EXC_BAD_ACCESS (SIGSEGV)`, `KERN_PROTECTION_FAILURE`, "Could not determine thread index
+for stack guard region", about 260 frames, the top under `AgentsList.body` → `observedAgentList` → `styledAgentList` and
+whatever that frame happened to call (`StoredValueBox.value`'s KeyPath, or KeyPath metadata). The main thread ran past its
+stack: 1 MB on a device, 8 MB in the simulator, which is why no simulator showed it. The `@StoredValue` read at the top is
+only the last straw, not the cause.
 
-- `EXC_BAD_ACCESS (SIGSEGV)`, `KERN_PROTECTION_FAILURE`, "Could not determine thread index for stack guard region": the
-  main thread ran out of stack, about 260 frames deep. That is not endless recursion; the frames are large.
-- Top of the stack:
+Not depth but frame size. Measured with lldb on the phone (each frame's own size is the next frame's SP minus its SP), at
+the crash:
+
+| Frame | Branch before the fix | `main` (`5474a23c6`) | After `ea58226d4` |
+|---|---|---|---|
+| `AgentsList.observedAgentList` | 602,752 B | 533,600 B | 113,968 B |
+| `AgentsList.styledAgentList` | 105,056 B | 73,488 B | 17,472 B |
+| `AgentsList.body` | 57,840 B | 55,840 B | 57,840 B |
+| Main-thread stack in use on entering `styledAgentList` | ~1,031,000 B (crash) | 911,072 B | 303,936 B |
+
+`observedAgentList` and `styledAgentList` were generic over the list's full `some View` type and chain about 55 modifiers
+(sheets, tasks, `onChange`s, alerts). An unoptimized build gives every layer of that chain a stack slot holding all the
+layers under it. `main` already used 87% of the stack at that point (it does not crash: a Debug build of `main` opened with
+`-tab dev` stayed up); the one sidebar's section in the list and its conditions made the list's type larger and crossed
+the limit. The `SWIFT_OPTIMIZATION_LEVEL=-O` try on the Debug build did not help either, as recorded before; the fix is
+in the code, not the build settings.
+
+**The fix (`ea58226d4`, `ChatsView.swift`):** `body` passes the list as one `AnyView`; `styledAgentList` and
+`observedAgentList` take `AnyView` (no longer generic); `observedAgentList` erases again before its sheets and before its
+tasks. The whole list once, not a row, so `docs/apple/performance.md` P6 still holds.
+
+### How it was checked on the phone
+
+- Device: a real iPhone Duo (`<UDID>`), Debug build signed with the Mac's Apple Development certificate and the
+  release bundle id (from a config outside the repository, `PERSONA_CONFIG=<path>`).
+- Measuring a frame: launch stopped, attach, break in `styledAgentList`, read the thread's SPs:
+  ```sh
+  xcrun devicectl device process launch --device <UDID> --terminate-existing --start-stopped <bundle id> \
+    --json-output /tmp/launch.json -- -tab dev
+  # lldb: device select <UDID>; device process attach --pid <pid>; breakpoint set -r 'AgentsList\.styledAgentList'; continue
   ```
-  swift::SubstGenericParametersFromMetadata::getMetadata / TypeDecoder::decodeGenericArgs / decodeMangledType
-  swift_getTypeByMangledName(InEnvironment)
-  _resolveKeyPathGenericArgReference / _walkKeyPathPattern / _getKeyPathClassAndInstanceSizeFromPattern
-  _swift_getKeyPath
-  StoredValueBox.value.getter
-  StoredValue.wrappedValue.getter
-  AgentsList.capsules.getter / AgentsList.floating.getter
-  AgentsList.styledAgentList(_:base:interactions:)
-  AgentsList.observedAgentList(_:base:interactions:quiet:matching:)
-  AgentsList.body.getter
-  … about 240 SwiftUI / AttributeGraph frames … PersonaApp.main
-  ```
-  `StoredValueBox` is `@Observable`, so reading `value` builds its KeyPath at run time, and decoding that generic type is
-  what goes past the end of the stack.
-- The same with `SWIFT_OPTIMIZATION_LEVEL=-O` on the Debug build, so it is not the optimization level.
-- The simulators don't crash (their main thread has the Mac's much larger stack). The release 1.0.0 (3920) that was on the
-  phone before doesn't crash this way.
+- Crash reports: `xcrun devicectl device info files --device <UDID> --domain-type systemCrashLogs`, then
+  `xcrun devicectl device copy from … --domain-type systemCrashLogs --source <name>.ips --destination <file>`. Match a
+  report to a build by the `Persona.debug.dylib` UUID (`dwarfdump --uuid`).
+- **Screenshots of the Duo's inner display:** `devicectl device capture screenshot` takes the cover display by default,
+  which is dark while the phone is open (a black 1398 × 2034 picture). Add `--display-unique-id <inner display id>` from
+  `xcrun devicectl device info displays` (the active `LCD-1`, 2007 × 2853).
+- `xcrun devicectl device orientation set` does not turn a real phone's interface; rotating means turning the phone.
+- Result after `ea58226d4`: a cold launch (the sidebar out, the Agents list's rows drawn), then the phone turned on its
+  side and upright again by the owner, twice: the process stayed up and no new crash report came. After the last turn the
+  column was folded (not looked into). On its side the column was laid over the dimmed page, not beside it: see "Known
+  issue, not fixed: on its side, a drag puts the page under the column".
+- Simulator after the fix, iPad Pro 13-inch: `OneSidebarTests`, `SplitDividerTests`, `IPadLayoutTests`, `IPadSidebarTests`,
+  `TreeSwapFoldTests`, `ReturnToChatTests`: 21 run, 18 passed, 2 skipped, 1 failed
+  (`TreeSwapFoldTests.testHealthReportsStillGoUpAfterAFold`, which fails on `main` too). The Duo's groups were not rerun
+  (its posture needs the Device Hub window).
 
-**Suspected cause (not proven):** the branch puts the Agents list deeper in the view tree (`OneSidebar`,
-`SplitNavigation`, `RootView`), so on the phone's smaller main-thread stack the list's first `@StoredValue` read is the
-step that runs out. **Not yet checked whether `main` crashes too:** a Debug build of `main` was ready, but the phone
-stayed unreachable and it was never installed.
-
-### Next steps
-
-1. Install `main` the same way and open it once, to see whether it crashes too.
-2. If only the branch crashes: find which new layers add the depth and cut the nesting, or read the `@StoredValue`s once
-   outside `body` (for example in the parent, passed down as plain values) so no KeyPath is built that deep.
-3. It counts as fixed only after the branch opens on a real phone and the Agents list shows; the simulators can't show this
-   crash.
-
-**The phone now** still has this crashing build; the owner needs to reinstall the release app from TestFlight first.
+**The phone now** has a Debug build of this branch, which runs; reinstall the release app from TestFlight to go back.
 
 ## 4. Status
 
